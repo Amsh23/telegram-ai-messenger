@@ -27,6 +27,10 @@ import io
 import pygetwindow as gw
 import glob
 
+# غیرفعال کردن failsafe برای عملیات طولانی
+pyautogui.FAILSAFE = False
+pyautogui.PAUSE = 0.2
+
 class TelegramUIDetector:
     """کلاس هوشمند برای تشخیص عناصر رابط کاربری تلگرام"""
     
@@ -269,11 +273,10 @@ class TelegramAIMessenger:
     
     def screenshot_telegram_and_reply(self):
         """
-        فقط از پنجره تلگرام با مسیر مشخص اسکرین‌شات بگیر و چت‌ها را شناسایی و پاسخ بده
-        فقط چت‌های فولدر "Littlejoy🐈" را پردازش می‌کند
+        نسخه بهبود یافته: اسکرین‌شات دقیق و تشخیص صحیح چت‌ها
         """
         # گرفتن مسیر تلگرام از کانفیگ
-        selected_account = self.account_var.get().strip() if hasattr(self, 'account_var') else "اکانت اصلی"
+        selected_account = self.account_var.get().strip() if hasattr(self, 'account_var') else "تلگرام Portable"
         account_info = next((acc for acc in self.config.get("telegram_accounts", []) if acc["username"] == selected_account), None)
         
         if not account_info:
@@ -281,110 +284,762 @@ class TelegramAIMessenger:
             return
         
         telegram_path = account_info.get("telegram_path", "")
-        self.log_message(f"🖼️ شروع اسکرین گرفتن از تلگرام: {selected_account}")
-        self.log_message("🐈 فقط چت‌های فولدر Littlejoy🐈 پردازش می‌شوند")
+        self.log_message(f"� شروع اسکرین‌شات بهبود یافته: {selected_account}")
+        self.log_message("🐈 تشخیص دقیق چت‌ها و پیام‌ها")
         
         try:
-            # اول تلگرام را باز کن
-            self.open_telegram_with_path(telegram_path)
-            time.sleep(3)
+            # مرحله 1: باز کردن تلگرام
+            self.log_message(f"📱 باز کردن تلگرام: {os.path.basename(telegram_path)}")
+            subprocess.Popen([telegram_path])
+            time.sleep(6)  # زمان بیشتر برای بارگذاری
             
-            # پیدا کردن پنجره تلگرام
-            windows = gw.getWindowsWithTitle('Telegram')
-            target_window = None
-            
-            if windows:
-                target_window = windows[0]
-                self.log_message(f"✅ پنجره تلگرام پیدا شد: {target_window.title}")
-            else:
-                self.log_message("❌ هیچ پنجره تلگرامی پیدا نشد!")
+            # مرحله 2: پیدا کردن پنجره اصلی
+            target_window = self.find_main_telegram_window()
+            if not target_window:
+                self.log_message("❌ پنجره اصلی تلگرام پیدا نشد!")
                 return
             
-            # فعال‌سازی و تمام صفحه کردن پنجره
-            self.log_message("📺 در حال تمام صفحه کردن تلگرام...")
-            target_window.activate()
-            time.sleep(1)
+            self.log_message(f"✅ پنجره اصلی: '{target_window.title}' - {target_window.width}x{target_window.height}")
             
-            # اطمینان از تمام صفحه شدن
-            target_window.maximize()
-            time.sleep(1)
+            # مرحله 3: فعال‌سازی پنجره
+            self.safe_activate_window_improved(target_window)
             
-            # فشردن F11 برای تمام صفحه کامل
-            pyautogui.press('f11')
-            time.sleep(2)
-            self.log_message("📺 تلگرام در حالت تمام صفحه قرار گرفت")
+            # مرحله 4: fullscreen قدرتمند
+            if not self.force_maximize_telegram():
+                self.log_message("⚠️ نتوانستیم کاملاً maximize کنیم، ادامه می‌دهیم...")
             
-            # دریافت ابعاد جدید صفحه
-            screen_width, screen_height = pyautogui.size()
-            self.log_message(f"📏 ابعاد صفحه: {screen_width}x{screen_height}")
+            # مرحله 5: مراحل دستی fullscreen
+            self.manual_fullscreen_steps()
             
-            # گرفتن اسکرین‌شات کامل
-            screenshot = pyautogui.screenshot()
-            screenshot.save('telegram_fullscreen_screenshot.png')
-            self.log_message("✅ اسکرین‌شات تمام صفحه از تلگرام ذخیره شد!")
+            # مرحله 6: اسکرین‌شات تأیید شده
+            screenshot, screenshot_path = self.take_verified_screenshot()
+            if not screenshot:
+                self.log_message("❌ مشکل در اسکرین‌شات")
+                return
             
-            # تنظیم detector برای ابعاد کامل صفحه
-            self.ui_detector.screen_width = screen_width
-            self.ui_detector.screen_height = screen_height
+            self.log_message(f"✅ اسکرین‌شات نهایی: {screenshot_path}")
             
-            # تشخیص ساختار پنجره تلگرام در حالت تمام صفحه
-            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-            self.log_message("🔍 شروع تشخیص چت‌ها از اسکرین‌شات تمام صفحه...")
+            # مرحله 7: تشخیص layout هوشمند
+            chat_region, message_region, input_region, send_region = self.smart_layout_detection(screenshot)
             
-            # تنظیم نواحی برای حالت تمام صفحه
-            chat_list_width = int(screen_width * 0.25)  # 25% چپ برای لیست چت‌ها
-            message_area_width = int(screen_width * 0.75)  # 75% راست برای پیام‌ها
+            # مرحله 8: تشخیص چت‌ها
+            chat_positions = self.detect_chat_list_improved(screenshot, chat_region)
             
-            self.ui_detector.chat_list_region = (0, 100, chat_list_width, screen_height - 150)
-            self.ui_detector.message_area_region = (chat_list_width, 100, message_area_width, screen_height - 150)
-            self.ui_detector.input_box_region = (chat_list_width, screen_height - 100, message_area_width - 80, 50)
-            self.ui_detector.send_button_region = (screen_width - 80, screen_height - 100, 80, 50)
+            if not chat_positions:
+                self.log_message("❌ چتی پیدا نشد")
+                return
             
-            self.log_message(f"📋 نواحی تنظیم شد - چت‌ها: {chat_list_width}px، پیام‌ها: {message_area_width}px")
+            # مرحله 9: پردازش چت‌ها
+            self.log_message(f"🔄 پردازش {min(len(chat_positions), 5)} چت...")
             
-            # هدایت به فولدر Littlejoy
-            self.navigate_to_littlejoy_folder_improved()
-            time.sleep(3)
-            
-            # گرفتن اسکرین‌شات جدید بعد از هدایت
-            screenshot = pyautogui.screenshot()
-            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-            
-            # تشخیص چت‌های Littlejoy
-            chat_positions = self.detect_littlejoy_chats_improved(img)
-            
-            if chat_positions:
-                self.log_message(f"🐈 {len(chat_positions)} چت Littlejoy تشخیص داده شد")
+            success_count = 0
+            for i, (chat_x, chat_y) in enumerate(chat_positions[:5]):
+                if not self.is_running:
+                    break
                 
-                # پردازش هر چت
-                for i, chat_pos in enumerate(chat_positions[:5]):  # حداکثر 5 چت
-                    if not self.is_running:
-                        break
+                self.log_message(f"\n--- چت {i+1} ---")
+                
+                # کلیک روی چت
+                if not self.safe_click(chat_x, chat_y, f"چت {i+1}"):
+                    continue
+                
+                time.sleep(2)
+                
+                # خواندن پیام‌ها
+                messages = self.safe_read_messages(message_region)
+                
+                if messages:
+                    self.log_message(f"📖 {len(messages)} پیام دریافت شد:")
+                    for msg in messages:
+                        self.log_message(f"   • {msg[:60]}...")
                     
-                    self.log_message(f"🔍 پردازش چت {i+1} در موقعیت {chat_pos}")
+                    # تولید پاسخ Littlejoy
+                    reply = self.generate_littlejoy_reply_improved(messages)
                     
-                    # کلیک روی چت
-                    pyautogui.click(chat_pos[0], chat_pos[1])
-                    time.sleep(2)
-                    
-                    # خواندن و پاسخ‌دهی
-                    success = self.process_single_chat()
-                    
-                    if success:
-                        self.log_message(f"✅ چت {i+1} با موفقیت پردازش شد")
+                    # ارسال پاسخ
+                    if self.safe_send_message(reply, input_region):
+                        self.log_message(f"✅ پاسخ ارسال شد: {reply[:50]}...")
+                        success_count += 1
                     else:
-                        self.log_message(f"⚠️ مشکل در پردازش چت {i+1}")
-                    
-                    time.sleep(2)
-            else:
-                self.log_message("❌ هیچ چت Littlejoy پیدا نشد!")
+                        self.log_message("❌ مشکل در ارسال")
+                else:
+                    self.log_message("⚠️ پیامی یافت نشد")
+                
+                time.sleep(3)  # فاصله بین چت‌ها
             
-            self.log_message("✅ پردازش تمام صفحه Littlejoy🐈 تمام شد")
+            self.log_message(f"\n✅ پردازش کامل! {success_count}/{min(len(chat_positions), 5)} چت موفق")
             
         except Exception as e:
-            self.log_message(f"❌ خطا در اسکرین گرفتن: {e}")
+            self.log_message(f"❌ خطا در اسکرین‌شات بهبود یافته: {e}")
             import traceback
             self.log_message(f"جزئیات خطا: {traceback.format_exc()}")
+    
+    def find_main_telegram_window(self):
+        """پیدا کردن پنجره اصلی تلگرام (بزرگترین پنجره)"""
+        try:
+            all_windows = gw.getAllWindows()
+            telegram_windows = []
+            
+            for window in all_windows:
+                window_title = window.title.lower()
+                if ('telegram' in window_title and 
+                    'messenger' not in window_title and
+                    'ai' not in window_title and
+                    window.width > 400 and window.height > 300):  # حداقل اندازه معقول
+                    telegram_windows.append(window)
+                    self.log_message(f"📱 پنجره: '{window.title}' - {window.width}x{window.height}")
+            
+            if not telegram_windows:
+                self.log_message("❌ هیچ پنجره تلگرام مناسب پیدا نشد")
+                return None
+            
+            # انتخاب بزرگترین پنجره
+            main_window = max(telegram_windows, key=lambda w: w.width * w.height)
+            return main_window
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در جستجوی پنجره: {e}")
+            return None
+    
+    def safe_activate_window_improved(self, window):
+        """فعال‌سازی بهبود یافته پنجره"""
+        try:
+            window.activate()
+            time.sleep(1)
+            self.log_message("✅ پنجره فعال شد")
+        except:
+            center_x = window.left + window.width // 2
+            center_y = window.top + window.height // 2
+            pyautogui.click(center_x, center_y)
+            time.sleep(1)
+            self.log_message("✅ پنجره با کلیک فعال شد")
+    
+    def force_maximize_telegram(self):
+        """اجبار برای maximize کردن تلگرام"""
+        try:
+            self.log_message("💪 اجبار برای maximize کردن...")
+            
+            # تلاش چندگانه F11
+            for i in range(3):
+                pyautogui.press('f11')
+                time.sleep(1.5)
+                
+                # بررسی اندازه پنجره
+                window = self.find_main_telegram_window()
+                if window and window.width > 2000:  # اگر کافی بزرگ شد
+                    self.log_message(f"✅ موفق! اندازه: {window.width}x{window.height}")
+                    return True
+            
+            # ترکیب کلیدها
+            combinations = [['alt', 'enter'], ['win', 'up']]
+            
+            for combo in combinations:
+                pyautogui.hotkey(*combo)
+                time.sleep(2)
+                pyautogui.press('f11')
+                time.sleep(2)
+                
+                window = self.find_main_telegram_window()
+                if window and window.width > 2000:
+                    self.log_message(f"✅ موفق با ترکیب!")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در maximize: {e}")
+            return False
+    
+    def manual_fullscreen_steps(self):
+        """مراحل دستی fullscreen"""
+        try:
+            self.log_message("🎯 اجرای مراحل دستی fullscreen...")
+            
+            # مرحله 1: Escape و کلیک وسط
+            pyautogui.press('escape')
+            time.sleep(0.5)
+            
+            screen_width, screen_height = pyautogui.size()
+            pyautogui.click(screen_width // 2, screen_height // 2)
+            time.sleep(0.5)
+            
+            # مرحله 2: تلاش‌های F11
+            for attempt in range(3):
+                pyautogui.press('f11')
+                time.sleep(2)
+                
+                window = self.find_main_telegram_window()
+                if window:
+                    coverage = (window.width * window.height) / (screen_width * screen_height)
+                    if coverage > 0.8:
+                        self.log_message("✅ Fullscreen موفقیت‌آمیز!")
+                        return True
+            
+            return False
+        except Exception as e:
+            self.log_message(f"❌ خطا در fullscreen دستی: {e}")
+            return False
+    
+    def take_verified_screenshot(self):
+        """گرفتن اسکرین‌شات تأیید شده"""
+        try:
+            time.sleep(3)
+            screenshot = pyautogui.screenshot()
+            
+            timestamp = int(time.time())
+            path = f"telegram_verified_{timestamp}.png"
+            screenshot.save(path)
+            
+            # تحلیل کیفیت
+            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            height, width = img.shape[:2]
+            
+            screen_w, screen_h = pyautogui.size()
+            coverage = (width * height) / (screen_w * screen_h)
+            
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            variance = np.var(gray)
+            
+            self.log_message(f"� اسکرین‌شات: {width}x{height}, پوشش: {coverage:.1%}, تنوع: {variance:.1f}")
+            
+            if coverage > 0.7 and variance > 100 and width > 2000:
+                self.log_message(f"✅ اسکرین‌شات خوب")
+            else:
+                self.log_message(f"⚠️ اسکرین‌شات ممکن است مشکل داشته باشد")
+            
+            return screenshot, path
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در اسکرین‌شات: {e}")
+            return None, None
+    
+    def smart_layout_detection(self, screenshot):
+        """تشخیص هوشمند layout"""
+        try:
+            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            height, width = img.shape[:2]
+            
+            # تقسیم‌بندی بر اساس نسبت طلایی تلگرام
+            sidebar_width = int(width * 0.28)  # 28% عرض
+            
+            chat_list = {
+                'x': 10, 'y': 90,
+                'width': sidebar_width - 20,
+                'height': height - 180
+            }
+            
+            message_area = {
+                'x': sidebar_width + 10, 'y': 90,
+                'width': width - sidebar_width - 20,
+                'height': height - 180
+            }
+            
+            input_box = {
+                'x': sidebar_width + 30, 'y': height - 100,
+                'width': width - sidebar_width - 120,
+                'height': 60
+            }
+            
+            send_button = {
+                'x': width - 80, 'y': height - 100,
+                'width': 60, 'height': 60
+            }
+            
+            self.log_message(f"� Layout: Sidebar {sidebar_width}px")
+            
+            return chat_list, message_area, input_box, send_button
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تشخیص layout: {e}")
+            width, height = pyautogui.size()
+            return (
+                {'x': 10, 'y': 90, 'width': width//4, 'height': height-180},
+                {'x': width//4+10, 'y': 90, 'width': width*3//4-20, 'height': height-180},
+                {'x': width//4+30, 'y': height-100, 'width': width*3//4-120, 'height': 60},
+                {'x': width-80, 'y': height-100, 'width': 60, 'height': 60}
+            )
+    
+    def detect_chat_list_improved(self, screenshot, chat_region):
+        """تشخیص بهبود یافته لیست چت‌ها"""
+        try:
+            chat_height = 65  # ارتفاع متوسط هر چت
+            start_y = chat_region['y'] + 20
+            max_chats = min(8, (chat_region['height'] - 40) // chat_height)
+            
+            chat_positions = []
+            
+            for i in range(max_chats):
+                center_x = chat_region['x'] + chat_region['width'] // 2
+                center_y = start_y + (i * chat_height)
+                
+                if center_y < chat_region['y'] + chat_region['height'] - 20:
+                    chat_positions.append((center_x, center_y))
+            
+            self.log_message(f"🎯 {len(chat_positions)} موقعیت چت تعیین شد")
+            return chat_positions
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تشخیص چت‌ها: {e}")
+            return []
+    
+    def safe_click(self, x, y, description=""):
+        """کلیک ایمن با بررسی محدوده"""
+        try:
+            screen_w, screen_h = pyautogui.size()
+            
+            if 0 <= x <= screen_w and 0 <= y <= screen_h:
+                pyautogui.click(x, y)
+                time.sleep(0.5)
+                return True
+            else:
+                self.log_message(f"⚠️ موقعیت خارج از محدوده: ({x}, {y})")
+                return False
+        except Exception as e:
+            self.log_message(f"❌ خطا در کلیک: {e}")
+            return False
+    
+    def safe_read_messages(self, message_region=None):
+        """خواندن پیشرفته و دقیق پیام‌ها"""
+        try:
+            self.log_message("📖 خواندن پیشرفته پیام‌ها...")
+            
+            # اگر message_region داده نشده، محاسبه کن
+            if message_region is None:
+                screenshot = pyautogui.screenshot()
+                width, height = screenshot.size
+                
+                # محاسبه ناحیه پیام بر اساس layout
+                sidebar_width = int(width * 0.28)  # 28% برای sidebar
+                message_start_x = sidebar_width + 50
+                message_start_y = 100
+                message_end_x = width - 50
+                message_end_y = height - 150
+                
+                message_region = {
+                    'x': message_start_x,
+                    'y': message_start_y,
+                    'width': message_end_x - message_start_x,
+                    'height': message_end_y - message_start_y
+                }
+                self.log_message(f"📍 ناحیه پیام محاسبه شد: {message_region}")
+            
+            # کلیک در ناحیه پیام‌ها
+            center_x = message_region['x'] + message_region['width'] // 2
+            center_y = message_region['y'] + message_region['height'] // 2
+            
+            if not self.safe_click(center_x, center_y, "ناحیه پیام"):
+                return []
+            
+            # اسکرول به پایین‌ترین پیام‌ها
+            for _ in range(5):
+                pyautogui.scroll(-5, x=center_x, y=center_y)
+                time.sleep(0.3)
+            
+            time.sleep(1)
+            
+            # روش 1: خواندن با انتخاب دقیق
+            # شروع از پایین ناحیه پیام‌ها
+            start_x = message_region['x'] + 100
+            start_y = message_region['y'] + message_region['height'] - 200  # 200 پیکسل از پایین
+            end_x = message_region['x'] + message_region['width'] - 100
+            end_y = message_region['y'] + message_region['height'] - 50    # 50 پیکسل از پایین
+            
+            # کلیک و کشیدن برای انتخاب آخرین پیام‌ها
+            pyautogui.click(start_x, start_y)
+            time.sleep(0.3)
+            pyautogui.drag(end_x, end_y, duration=0.8)
+            time.sleep(0.5)
+            
+            # کپی محتوا
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(1)
+            
+            text1 = pyperclip.paste()
+            
+            # روش 2: خواندن با Ctrl+A در ناحیه محدود
+            # انتخاب ناحیه کوچک‌تر برای پیام‌های اخیر
+            small_x = message_region['x'] + 150
+            small_y = message_region['y'] + message_region['height'] - 300
+            small_w = min(600, message_region['width'] - 300)
+            small_h = 200
+            
+            pyautogui.click(small_x, small_y)
+            time.sleep(0.3)
+            pyautogui.drag(small_x + small_w, small_y + small_h, duration=0.5)
+            time.sleep(0.5)
+            
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(0.8)
+            
+            text2 = pyperclip.paste()
+            
+            # ترکیب و پردازش متن‌ها
+            all_texts = [text1, text2]
+            all_messages = []
+            
+            for text in all_texts:
+                if text and len(text) > 3:
+                    # جدا کردن خطوط
+                    lines = text.strip().split('\n')
+                    
+                    for line in lines:
+                        line = line.strip()
+                        
+                        # فیلتر کردن خطوط معتبر
+                        if (line and 
+                            len(line) > 3 and 
+                            not line.isdigit() and 
+                            not line.startswith('http') and
+                            'python' not in line.lower() and
+                            'smart_telegram' not in line.lower() and
+                            'telegram_ai' not in line.lower() and
+                            'online' not in line.lower() and
+                            'last seen' not in line.lower() and
+                            'typing' not in line.lower() and
+                            'در حال تایپ' not in line and
+                            'آنلاین' not in line and
+                            len(line) < 500):  # حداکثر طول پیام
+                            
+                            # حذف timestamp ها
+                            clean_line = re.sub(r'\d{2}:\d{2}', '', line).strip()
+                            clean_line = re.sub(r'\d{1,2}/\d{1,2}', '', clean_line).strip()
+                            
+                            if clean_line and clean_line not in all_messages:
+                                all_messages.append(clean_line)
+            
+            # انتخاب بهترین پیام‌ها
+            valid_messages = []
+            for msg in all_messages:
+                # بررسی اینکه پیام واقعی باشد
+                if (any(char.isalpha() for char in msg) and  # حداقل یک حرف
+                    not msg.startswith('✅') and             # نه پیام سیستم
+                    not msg.startswith('📱') and             # نه پیام سیستم
+                    not msg.startswith('🔍') and             # نه پیام سیستم
+                    len(msg.split()) > 1):                   # حداقل 2 کلمه
+                    valid_messages.append(msg)
+            
+            # برگرداندن آخرین پیام‌های معتبر
+            final_messages = list(dict.fromkeys(valid_messages))  # حذف تکراری
+            result = final_messages[-3:] if final_messages else []  # 3 پیام آخر
+            
+            if result:
+                self.log_message(f"📝 {len(result)} پیام معتبر خوانده شد")
+                for i, msg in enumerate(result):
+                    self.log_message(f"   {i+1}. {msg[:80]}...")
+            else:
+                self.log_message("⚠️ هیچ پیام معتبری یافت نشد")
+            
+            return result
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در خواندن پیشرفته: {e}")
+            return []
+    
+    def safe_send_message(self, message, input_region):
+        """ارسال ایمن پیام"""
+        try:
+            # کلیک روی input box
+            center_x = input_region['x'] + input_region['width'] // 2
+            center_y = input_region['y'] + input_region['height'] // 2
+            
+            if not self.safe_click(center_x, center_y, "input box"):
+                return False
+            
+            # پاک کردن
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.2)
+            pyautogui.press('delete')
+            time.sleep(0.3)
+            
+            # تایپ پیام
+            pyautogui.typewrite(message, interval=0.02)
+            time.sleep(1)
+            
+            # ارسال
+            pyautogui.press('enter')
+            time.sleep(1)
+            
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال: {e}")
+            return False
+    
+    def generate_littlejoy_reply_improved(self, messages):
+        """تولید پاسخ هوشمند بر اساس محتوای واقعی پیام‌ها"""
+        try:
+            if not messages:
+                return "🐈 سلام! چطوری؟ 😊"
+            
+            # ترکیب پیام‌ها برای تحلیل
+            full_context = " ".join(messages).lower()
+            last_message = messages[-1].lower() if messages else ""
+            
+            # تحلیل محتوای پیام برای تولید پاسخ مناسب
+            
+            # 1. پاسخ به سلام و احوالپرسی
+            if any(word in full_context for word in ['سلام', 'hi', 'hello', 'سلامت', 'درود']):
+                responses = [
+                    "🐈 سلام عزیزم! چطوری؟ خوش اومدی! 😊",
+                    "� سلام گلم! حالت چطوره؟ خیلی دلم برات تنگ شده! 💕",
+                    "🐾 سلام جونم! چه خبر؟ خوشحالم که پیام دادی! 😸"
+                ]
+                return random.choice(responses)
+            
+            # 2. پاسخ به سوال احوال
+            if any(word in full_context for word in ['چطور', 'حال', 'خوب', 'چه خبر', 'چطوری']):
+                responses = [
+                    "� ممنون که پرسیدی! منم خوبم عزیزم! تو چطوری؟ 💕",
+                    "🐈 خوبم گلم! خیلی خوشحالم که باهام حرف می‌زنی! تو چی؟ 😊",
+                    "� عالیم دوست عزیزم! امیدوارم تو هم خوب باشی! 😻"
+                ]
+                return random.choice(responses)
+            
+            # 3. پاسخ به تشکر
+            if any(word in full_context for word in ['ممنون', 'مرسی', 'thanks', 'تشکر', 'سپاس']):
+                responses = [
+                    "🐈 خواهش می‌کنم عزیزم! هر وقت کاری داشتی بگو! 😊",
+                    "� قابل نداره گلم! همیشه در خدمتم! 💕",
+                    "🐾 عزیزی که! خوشحالم کمکت کردم! 😻"
+                ]
+                return random.choice(responses)
+            
+            # 4. پاسخ به سوال
+            if any(word in last_message for word in ['؟', 'چی', 'چه', 'کی', 'کجا', 'چرا', 'چطور']):
+                if 'کار' in full_context or 'شغل' in full_context:
+                    return "🐈 من یه ربات دوستانه‌ام! وظیفه‌ام کمک کردن به دوستانه! تو چی؟ 😊"
+                elif 'اسم' in full_context or 'نام' in full_context:
+                    return "😸 منم Littlejoy! خیلی خوشحالم آشناتون شدم! 🐾"
+                elif 'وقت' in full_context or 'زمان' in full_context:
+                    return "🐱 همیشه وقت دارم برای دوستای عزیزم مثل تو! 💕"
+                else:
+                    return "🐈 جالب سوال پرسیدی! بیشتر توضیح بده ببینم چطور کمکت کنم! 😊"
+            
+            # 5. پاسخ به احساسات
+            if any(word in full_context for word in ['ناراحت', 'غمگین', 'خسته', 'بد']):
+                responses = [
+                    "🐾 عزیزم ناراحت نباش! همه چیز درست میشه! من کنارتم! 💕",
+                    "😿 آخ دلم برات می‌سوزه! بگو چی شده تا کمکت کنم! 🤗",
+                    "🐈 نگران نباش گلم! همیشه امیدوار باش! 😊"
+                ]
+                return random.choice(responses)
+            
+            if any(word in full_context for word in ['خوشحال', 'شاد', 'عالی', 'فوق‌العاده']):
+                responses = [
+                    "😻 وای چقدر خوشحالم که خوشحالی! منم خیلی شادم! 🎉",
+                    "🐈 آفرین! عالیه که حالت خوبه! منم باهات شاد میشم! 😸",
+                    "🐾 چه خوب! انرژی مثبتت رو احساس می‌کنم! 💕"
+                ]
+                return random.choice(responses)
+            
+            # 6. پاسخ به موضوعات خاص
+            if any(word in full_context for word in ['کار', 'پروژه', 'تسک']):
+                return "🐈 آه کار! امیدوارم پروژه‌هات عالی پیش بره! موفق باشی! ��😊"
+            
+            if any(word in full_context for word in ['غذا', 'نهار', 'شام', 'صبحانه']):
+                return "😸 مم مم! غذا؟ من که گربه‌ام، عاشق ماهی و شیرم! تو چی دوست داری؟ 🐟🥛"
+            
+            if any(word in full_context for word in ['خواب', 'خسته', 'استراحت']):
+                return "😴 خواب خوب چیز خوبیه! حتماً استراحت کن تا حالت بهتر بشه! شب بخیر! 🌙💤"
+            
+            if any(word in full_context for word in ['بازی', 'گیم', 'سرگرمی']):
+                return "🎮 بازی؟ من عاشق بازی با نخ و توپم! تو چه بازی‌هایی دوست داری؟ 😸"
+            
+            # 7. پاسخ‌های عمومی بر اساس طول پیام
+            if len(full_context) > 100:  # پیام طولانی
+                responses = [
+                    "🐈 وای چقدر حرف داری! دوست دارم باهات حرف بزنم! ادامه بده! 😊",
+                    "😸 خیلی جالب بود! بیشتر بگو ببینم چی میشه! 🤗",
+                    "🐾 چه داستان جالبی! من که گوش می‌دم عزیزم! 👂💕"
+                ]
+                return random.choice(responses)
+            
+            elif len(full_context) < 10:  # پیام خیلی کوتاه
+                responses = [
+                    "🐈 هی! یه چیز کوتاه گفتی! بیشتر حرف بزن که بدونم چی می‌خوای! 😊",
+                    "😸 کمی کم حرف زدی! بیشتر توضیح بده! 🤗",
+                    "🐾 خب؟ منتظرم بیشتر بگی! 😻"
+                ]
+                return random.choice(responses)
+            
+            # 8. پاسخ‌های پیش‌فرض Littlejoy
+            default_responses = [
+                "🐈 جالب بود! ممنون که باهام حرف زدی! چیز دیگه‌ای هم داری؟ 😊",
+                "😸 آها! فهمیدم! خیلی خوشحالم که پیام دادی! 💕",
+                "🐾 حرف قشنگی زدی! دوست دارم بیشتر باهات حرف بزنم! 😻",
+                "🐱 ممنون از پیامت! همیشه خوشحالم که ازت می‌شنوم! 🤗",
+                "😺 چه جالب! یه گربه کنجکاو مثل من همیشه سوال داره! بگو ببینم چی شده؟ �"
+            ]
+            
+            return random.choice(default_responses)
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تولید پاسخ هوشمند: {e}")
+            return "🐈 سلام! چطوری عزیزم؟ 😊"
+    
+    def find_real_telegram_window(self):
+        """پیدا کردن پنجره تلگرام واقعی (نه برنامه Python)"""
+        try:
+            all_windows = gw.getAllWindows()
+            telegram_windows = []
+            
+            for window in all_windows:
+                window_title = window.title.lower()
+                
+                # فیلتر کردن پنجره‌هایی که احتمالاً تلگرام هستند
+                if ('telegram' in window_title and 
+                    'messenger' not in window_title and  # حذف برنامه Python ما
+                    'ai' not in window_title and        # حذف برنامه Python ما
+                    window.width > 300 and              # حداقل اندازه
+                    window.height > 200):
+                    telegram_windows.append(window)
+                    self.log_message(f"🔍 پنجره تلگرام پیدا شد: '{window.title}' - {window.width}x{window.height}")
+            
+            # اگر چندین پنجره پیدا شد، بزرگترین را انتخاب کن
+            if telegram_windows:
+                largest_window = max(telegram_windows, key=lambda w: w.width * w.height)
+                return largest_window
+            
+            # اگر پیدا نشد، سعی کن با جستجوی گسترده‌تر
+            for window in all_windows:
+                if ('telegram' in window.title.lower() and 
+                    window.width > 200 and window.height > 150):
+                    self.log_message(f"🔍 پنجره احتمالی تلگرام: '{window.title}'")
+                    return window
+            
+            return None
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در جستجوی پنجره تلگرام: {e}")
+            return None
+    
+    def safe_activate_window(self, window):
+        """فعال‌سازی ایمن پنجره"""
+        try:
+            # روش 1: استفاده از pygetwindow
+            window.activate()
+            time.sleep(1)
+            self.log_message("✅ پنجره با pygetwindow فعال شد")
+        except:
+            try:
+                # روش 2: استفاده از کلیک
+                center_x = window.left + window.width // 2
+                center_y = window.top + window.height // 2
+                pyautogui.click(center_x, center_y)
+                time.sleep(1)
+                self.log_message("✅ پنجره با کلیک فعال شد")
+            except:
+                try:
+                    # روش 3: استفاده از Alt+Tab
+                    pyautogui.hotkey('alt', 'tab')
+                    time.sleep(0.5)
+                    pyautogui.press('enter')
+                    time.sleep(1)
+                    self.log_message("✅ پنجره با Alt+Tab فعال شد")
+                except:
+                    self.log_message("⚠️ نتوانستم پنجره را فعال کنم")
+    
+    def safe_fullscreen_telegram(self, window):
+        """تمام صفحه کردن ایمن تلگرام"""
+        try:
+            self.log_message("📺 در حال تمام صفحه کردن تلگرام...")
+            
+            # روش 1: maximize
+            try:
+                window.maximize()
+                time.sleep(1)
+                self.log_message("✅ پنجره maximize شد")
+            except:
+                self.log_message("⚠️ نتوانستم پنجره را maximize کنم")
+            
+            # روش 2: F11 برای fullscreen
+            pyautogui.press('f11')
+            time.sleep(2)
+            self.log_message("✅ F11 فشرده شد برای fullscreen")
+            
+            # روش 3: کلیدهای Windows برای maximize
+            pyautogui.hotkey('win', 'up')
+            time.sleep(1)
+            self.log_message("✅ Windows+Up فشرده شد")
+            
+        except Exception as e:
+            self.log_message(f"⚠️ خطا در تمام صفحه کردن: {e}")
+    
+    def verify_telegram_screenshot(self, screenshot):
+        """بررسی اینکه اسکرین‌شات از تلگرام است"""
+        try:
+            # تبدیل به آرایه numpy
+            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # جستجو برای نشانه‌های تلگرام
+            # 1. رنگ آبی مشخصه تلگرام
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            blue_lower = np.array([100, 50, 50])
+            blue_upper = np.array([130, 255, 255])
+            blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
+            blue_pixels = cv2.countNonZero(blue_mask)
+            
+            # 2. بررسی وجود ساختار UI مشابه تلگرام
+            # تشخیص خطوط عمودی (جداکننده لیست چت‌ها)
+            vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 50))
+            vertical_lines = cv2.morphologyEx(gray, cv2.MORPH_OPEN, vertical_kernel)
+            vertical_pixels = cv2.countNonZero(vertical_lines)
+            
+            # اگر تعداد کافی پیکسل آبی یا خطوط عمودی وجود داشت
+            if blue_pixels > 1000 or vertical_pixels > 500:
+                self.log_message(f"✅ اسکرین‌شات از تلگرام تأیید شد (آبی: {blue_pixels}, خطوط: {vertical_pixels})")
+                return True
+            else:
+                self.log_message(f"❌ اسکرین‌شات احتمالاً از تلگرام نیست (آبی: {blue_pixels}, خطوط: {vertical_pixels})")
+                return False
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در بررسی اسکرین‌شات: {e}")
+            return False
+    
+    def manual_open_telegram(self):
+        """باز کردن دستی تلگرام"""
+        try:
+            self.log_message("📱 باز کردن دستی تلگرام...")
+            
+            # روش 1: فشردن Win+R و تایپ telegram
+            pyautogui.hotkey('win', 'r')
+            time.sleep(1)
+            pyautogui.typewrite('telegram')
+            time.sleep(1)
+            pyautogui.press('enter')
+            time.sleep(3)
+            
+            self.log_message("✅ تلگرام با Win+R باز شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در باز کردن دستی تلگرام: {e}")
+    
+    def open_telegram_with_path_safe(self, telegram_path):
+        """باز کردن ایمن تلگرام با مسیر مشخص"""
+        try:
+            if telegram_path and os.path.exists(telegram_path):
+                self.log_message(f"📱 باز کردن تلگرام از: {telegram_path}")
+                
+                # برای WindowsApps از روش مخصوص استفاده کن
+                if "WindowsApps" in telegram_path:
+                    # باز کردن از طریق Windows Store App
+                    os.system('start ms-windows-store://pdp/?productid=9NZTWSQNTD0S')
+                    time.sleep(3)
+                    # یا استفاده از protocol
+                    os.system('start telegram://')
+                    time.sleep(2)
+                else:
+                    subprocess.Popen([telegram_path])
+                    time.sleep(3)
+            else:
+                self.log_message("⚠️ مسیر تلگرام یافت نشد، از روش دستی استفاده می‌شود")
+                self.manual_open_telegram()
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در باز کردن تلگرام: {e}")
+            self.manual_open_telegram()
     
     def open_telegram_with_path(self, telegram_path):
         """باز کردن تلگرام با مسیر مشخص"""
@@ -546,7 +1201,7 @@ class TelegramAIMessenger:
                 return False
             
             # خواندن پیام‌ها
-            messages = self.read_messages_improved()
+            messages = self.safe_read_messages(None)  # None یعنی استفاده از کل ناحیه پیام
             
             if not messages:
                 self.log_message("⚠️ پیامی یافت نشد")
@@ -555,8 +1210,7 @@ class TelegramAIMessenger:
             self.log_message(f"📖 {len(messages)} پیام خوانده شد")
             
             # تولید پاسخ مخصوص Littlejoy
-            context = f"چت Littlejoy: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(messages[-3:])
-            reply = self.generate_littlejoy_reply(context)
+            reply = self.generate_littlejoy_reply_improved(messages)
             
             # ارسال پاسخ
             if self.send_message_improved(reply):
@@ -614,14 +1268,13 @@ class TelegramAIMessenger:
                     self.log_message(f"💬 پردازش چت خوانده نشده: {chat_name}")
                     
                     # خواندن پیام‌ها
-                    last_messages = self.smart_read_recent_messages()
+                    last_messages = self.safe_read_messages(None)
                     
                     if last_messages:
                         self.log_message(f"📖 {len(last_messages)} پیام خوانده شد")
                         
                         # تولید پاسخ
-                        context = f"چت خوانده نشده: {chat_name}\nپیام‌های جدید:\n" + "\n".join(last_messages[-3:])
-                        smart_reply = self.generate_contextual_reply(context)
+                        smart_reply = self.generate_littlejoy_reply_improved(last_messages)
                         
                         # ارسال پاسخ
                         if self.smart_send_message(smart_reply):
@@ -665,7 +1318,7 @@ class TelegramAIMessenger:
                     self.log_message(f"🐈 پردازش چت Littlejoy: {chat_name}")
                     
                     # خواندن پیام‌ها
-                    last_messages = self.smart_read_recent_messages()
+                    last_messages = self.safe_read_messages(None)
                     
                     if last_messages:
                         # بررسی نیاز به پاسخ
@@ -675,8 +1328,7 @@ class TelegramAIMessenger:
                             self.log_message(f"✅ چت Littlejoy {chat_name} نیاز به پاسخ دارد")
                             
                             # تولید پاسخ مناسب برای فولدر Littlejoy (ممکن است شامل مطالب مربوط به گربه باشد)
-                            context = f"چت Littlejoy: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(last_messages[-3:])
-                            smart_reply = self.generate_littlejoy_reply(context)
+                            smart_reply = self.generate_littlejoy_reply_improved(last_messages)
                             
                             # ارسال پاسخ
                             if self.smart_send_message(smart_reply):
