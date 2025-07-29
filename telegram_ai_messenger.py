@@ -17,17 +17,24 @@ import os
 import requests
 import random
 from datetime import datetime
+import re
+import winreg
+from pathlib import Path
 
 class TelegramAIMessenger:
     def __init__(self):
         self.is_running = False
         self.message_thread = None
         self.config_file = "ai_config.json"
+        self.detected_accounts = []
         self.load_config()
         
         # پیکربندی pyautogui
         pyautogui.FAILSAFE = True
         pyautogui.PAUSE = 0.3
+        
+        # تشخیص خودکار اکانت‌های تلگرام
+        self.auto_detect_telegram_accounts()
         
         self.setup_gui()
     
@@ -87,14 +94,363 @@ class TelegramAIMessenger:
         
         self.log_message("✅ خواندن و پاسخ‌دهی به همه چت‌ها تمام شد.")
 
+    def auto_detect_telegram_accounts(self):
+        """تشخیص خودکار تمام اکانت‌های تلگرام نصب شده"""
+        self.detected_accounts = []
+        print("🔍 در حال تشخیص اکانت‌های تلگرام...")
+        
+        # مسیرهای احتمالی تلگرام
+        possible_paths = [
+            # Windows Store version
+            "C:\\Program Files\\WindowsApps\\TelegramMessengerLLP.TelegramDesktop_*\\Telegram.exe",
+            # Portable versions
+            "C:\\Users\\*\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe",
+            "C:\\Users\\*\\Desktop\\Telegram\\Telegram.exe",
+            "D:\\Apps\\Telegram\\Telegram.exe",
+            "C:\\Program Files\\Telegram Desktop\\Telegram.exe",
+            "C:\\Program Files (x86)\\Telegram Desktop\\Telegram.exe",
+        ]
+        
+        # جستجو در Registry برای نسخه‌های نصب شده
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
+            for i in range(winreg.QueryInfoKey(key)[0]):
+                try:
+                    subkey_name = winreg.EnumKey(key, i)
+                    subkey = winreg.OpenKey(key, subkey_name)
+                    display_name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                    if "telegram" in display_name.lower():
+                        install_location = winreg.QueryValueEx(subkey, "InstallLocation")[0]
+                        telegram_exe = os.path.join(install_location, "Telegram.exe")
+                        if os.path.exists(telegram_exe):
+                            self.detected_accounts.append({
+                                "username": f"Telegram ({display_name})",
+                                "telegram_path": telegram_exe
+                            })
+                except:
+                    pass
+        except:
+            pass
+        
+        # جستجو در مسیرهای معمول
+        import glob
+        for pattern in possible_paths:
+            try:
+                for path in glob.glob(pattern):
+                    if os.path.exists(path):
+                        account_name = self.extract_account_name_from_path(path)
+                        self.detected_accounts.append({
+                            "username": account_name,
+                            "telegram_path": path
+                        })
+            except:
+                pass
+        
+        # حذف تکراری‌ها
+        seen_paths = set()
+        unique_accounts = []
+        for account in self.detected_accounts:
+            if account["telegram_path"] not in seen_paths:
+                seen_paths.add(account["telegram_path"])
+                unique_accounts.append(account)
+        
+        self.detected_accounts = unique_accounts
+        print(f"✅ {len(self.detected_accounts)} اکانت تلگرام پیدا شد")
+        
+        # ادغام با تنظیمات موجود
+        existing_accounts = self.config.get("telegram_accounts", [])
+        for detected in self.detected_accounts:
+            if not any(acc["telegram_path"] == detected["telegram_path"] for acc in existing_accounts):
+                existing_accounts.append(detected)
+        
+        self.config["telegram_accounts"] = existing_accounts
+
+    def extract_account_name_from_path(self, path):
+        """استخراج نام اکانت از مسیر فایل"""
+        if "WindowsApps" in path:
+            return "Telegram Desktop (Windows Store)"
+        elif "AppData\\Roaming" in path:
+            username = path.split("\\")[2] if len(path.split("\\")) > 2 else "User"
+            return f"Telegram Desktop ({username})"
+        elif "Desktop" in path:
+            return "Telegram Portable (Desktop)"
+        elif "Program Files" in path:
+            return "Telegram Desktop (System)"
+        else:
+            folder_name = os.path.dirname(path).split("\\")[-1]
+            return f"Telegram ({folder_name})"
+
+    def improved_read_and_reply_all_chats(self):
+        """
+        نسخه بهبود یافته خواندن و پاسخ‌دهی به همه چت‌ها
+        با تشخیص دقیق‌تر پیام‌ها و پاسخ‌دهی هوشمند
+        """
+        self.log_message("🚦 شروع خواندن پیشرفته و پاسخ‌دهی به همه چت‌ها...")
+        
+        try:
+            # اطمینان از باز بودن تلگرام
+            time.sleep(2)
+            
+            # تعداد چت‌هایی که بررسی شوند
+            max_chats = 15
+            
+            for chat_index in range(max_chats):
+                if not self.is_running:
+                    break
+                
+                self.log_message(f"📋 بررسی چت {chat_index + 1}...")
+                
+                # موقعیت چت در لیست (تنظیم شده برای رزولوشن‌های مختلف)
+                chat_x = 150
+                chat_y = 100 + (chat_index * 70)
+                
+                # کلیک روی چت
+                pyautogui.click(chat_x, chat_y)
+                time.sleep(1.5)
+                
+                # خواندن نام چت/کاربر
+                chat_name = self.get_current_chat_name()
+                
+                # خواندن آخرین پیام‌ها
+                last_messages = self.read_recent_messages()
+                
+                if last_messages:
+                    self.log_message(f"👤 چت: {chat_name}")
+                    for i, msg in enumerate(last_messages[-3:]):  # نمایش 3 پیام آخر
+                        self.log_message(f"📨 پیام {i+1}: {msg[:100]}...")
+                    
+                    # تولید پاسخ هوشمند بر اساس کل مکالمه
+                    context = f"نام چت: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(last_messages[-3:])
+                    smart_reply = self.generate_contextual_reply(context)
+                    
+                    # ارسال پاسخ
+                    if self.send_message_to_current_chat(smart_reply):
+                        self.log_message(f"✅ پاسخ ارسال شد: {smart_reply[:80]}...")
+                    else:
+                        self.log_message("❌ خطا در ارسال پاسخ")
+                else:
+                    self.log_message(f"⚠️ چت {chat_index + 1}: پیامی یافت نشد")
+                
+                time.sleep(2)  # انتظار بین چت‌ها
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در خواندن چت‌ها: {e}")
+        
+        self.log_message("✅ خواندن پیشرفته و پاسخ‌دهی تمام شد.")
+
+    def get_current_chat_name(self):
+        """دریافت نام چت/کاربر فعلی"""
+        try:
+            # کلیک روی نام چت در بالای صفحه
+            pyautogui.click(400, 50)
+            time.sleep(0.5)
+            
+            # انتخاب و کپی نام
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.2)
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(0.3)
+            
+            chat_name = pyperclip.paste().strip()
+            return chat_name if chat_name else "نامشخص"
+        except:
+            return "نامشخص"
+
+    def read_recent_messages(self):
+        """خواندن پیام‌های اخیر در چت فعلی"""
+        messages = []
+        try:
+            # اسکرول به آخرین پیام‌ها
+            pyautogui.scroll(-5, x=500, y=400)
+            time.sleep(1)
+            
+            # انتخاب ناحیه چت
+            chat_area_x, chat_area_y = 500, 400
+            pyautogui.click(chat_area_x, chat_area_y)
+            time.sleep(0.5)
+            
+            # روش‌های مختلف برای خواندن پیام‌ها
+            
+            # روش 1: انتخاب همه و کپی
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.5)
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(0.5)
+            
+            all_text = pyperclip.paste()
+            
+            # تجزیه متن به پیام‌های جداگانه
+            if all_text:
+                # تمیز کردن و تقسیم متن
+                lines = all_text.split('\n')
+                current_message = ""
+                
+                for line in lines:
+                    line = line.strip()
+                    if line:
+                        # تشخیص شروع پیام جدید (معمولاً با زمان یا نام کاربر)
+                        if re.match(r'^\d{1,2}:\d{2}', line) or len(current_message) > 200:
+                            if current_message:
+                                messages.append(current_message.strip())
+                            current_message = line
+                        else:
+                            current_message += " " + line
+                
+                # اضافه کردن آخرین پیام
+                if current_message:
+                    messages.append(current_message.strip())
+            
+            # فیلتر کردن پیام‌های خالی و کوتاه
+            filtered_messages = []
+            for msg in messages:
+                if len(msg) > 5 and not msg.isdigit():  # حذف پیام‌های خیلی کوتاه و اعداد
+                    filtered_messages.append(msg)
+            
+            return filtered_messages[-5:] if filtered_messages else []  # 5 پیام آخر
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در خواندن پیام‌ها: {e}")
+            return []
+
+    def generate_contextual_reply(self, context):
+        """تولید پاسخ هوشمند بر اساس کنتکست کامل مکالمه"""
+        if not self.ai_enabled_var.get():
+            return self.base_message_text.get('1.0', tk.END).strip()
+        
+        try:
+            url = self.ollama_url_var.get()
+            model = self.ollama_model_var.get()
+            personality = self.personality_var.get()
+            use_variety = self.message_variety_var.get()
+            use_emojis = self.use_emojis_var.get()
+            
+            # تعریف شخصیت‌ها
+            personality_descriptions = {
+                'دوستانه و صمیمی': 'دوستانه، گرم، صمیمی و نزدیک',
+                'رسمی و حرفه‌ای': 'رسمی، حرفه‌ای، مؤدب و دقیق',
+                'شوخ و سرگرم‌کننده': 'شوخ، بامزه، خنده‌دار و سرگرم‌کننده',
+                'آموزشی و مفید': 'آموزشی، مفید، اطلاعاتی و کاربردی',
+                'انگیزشی و مثبت': 'انگیزشی، مثبت، امیدوار و پرانرژی',
+                'خلاق و هنری': 'خلاق، هنری، زیبا و الهام‌بخش'
+            }
+            
+            # ایجاد prompt پیشرفته
+            emoji_instruction = "از ایموجی‌های مناسب استفاده کن." if use_emojis else "از ایموجی استفاده نکن."
+            variety_instruction = "پاسخ را خلاقانه و متفاوت بنویس." if use_variety else ""
+            
+            prompt = f"""
+تو یک دستیار هوشمند برای پاسخ به پیام‌های تلگرام هستی.
+
+شخصیت تو: {personality_descriptions.get(personality, 'معمولی')}
+
+کنتکست مکالمه:
+{context}
+
+دستورالعمل:
+- پاسخ کوتاه و مناسب باشد (حداکثر 2-3 خط)
+- به آخرین پیام مستقیماً پاسخ بده
+- زبان فارسی و طبیعی استفاده کن
+- {variety_instruction}
+- {emoji_instruction}
+- مناسب چت خصوصی یا گروهی باشد
+- اگر سوالی پرسیده شده، مستقیماً جواب بده
+
+پاسخ مناسب:
+"""
+            
+            response = requests.post(f"{url}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,
+                        "max_tokens": 150
+                    }
+                },
+                timeout=25)
+            
+            if response.status_code == 200:
+                result = response.json()
+                ai_reply = result.get('response', '').strip()
+                
+                # پاک‌سازی پاسخ
+                ai_reply = ai_reply.replace('\n\n', '\n').strip()
+                
+                # اضافه کردن تنوع اضافی
+                if use_variety and use_emojis:
+                    random_emojis = ['✨', '🌟', '💫', '🎯', '💡', '🔥', '⚡', '🌈', '🎨', '❤️']
+                    if ai_reply and not any(emoji in ai_reply for emoji in random_emojis):
+                        ai_reply += f" {random.choice(random_emojis)}"
+                
+                return ai_reply if ai_reply else "سلام! چطورید؟ 😊"
+            else:
+                self.log_message(f"خطا در تولید پاسخ AI: {response.status_code}")
+                return "سلام! چطورید؟ 😊"
+                
+        except Exception as e:
+            self.log_message(f"خطا در تولید پاسخ AI: {e}")
+            return "سلام! چطورید؟ 😊"
+
+    def send_message_to_current_chat(self, message):
+        """ارسال پیام به چت فعلی"""
+        try:
+            # پیدا کردن باکس تایپ پیام
+            message_box_x, message_box_y = 500, 650
+            pyautogui.click(message_box_x, message_box_y)
+            time.sleep(0.5)
+            
+            # پاک کردن محتوای قبلی (در صورت وجود)
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.2)
+            
+            # کپی و ارسال پیام
+            pyperclip.copy(message)
+            time.sleep(0.3)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.8)
+            pyautogui.press('enter')
+            time.sleep(0.5)
+            
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال پیام: {e}")
+            return False
+
     def start_read_and_reply(self):
         """شروع خواندن و پاسخ‌دهی خودکار به همه چت‌ها"""
         if not self.is_running:
             self.is_running = True
-            self.log_message("🚀 شروع خواندن و پاسخ‌دهی خودکار...")
-            threading.Thread(target=self.read_and_reply_all_chats, daemon=True).start()
+            self.log_message("🚀 شروع خواندن پیشرفته و پاسخ‌دهی خودکار...")
+            threading.Thread(target=self.improved_read_and_reply_all_chats, daemon=True).start()
         else:
             self.log_message("⚠️ عملیات قبلی هنوز در حال اجرا است")
+
+    def refresh_accounts(self):
+        """تشخیص مجدد اکانت‌های تلگرام"""
+        self.auto_detect_telegram_accounts()
+        
+        # بروزرسانی لیست اکانت‌ها در رابط کاربری
+        all_accounts = self.config.get("telegram_accounts", [])
+        unique_accounts = []
+        seen_paths = set()
+        for acc in all_accounts:
+            if acc["telegram_path"] not in seen_paths:
+                seen_paths.add(acc["telegram_path"])
+                unique_accounts.append(acc)
+        
+        self.account_list = [acc["username"] for acc in unique_accounts]
+        if hasattr(self, 'account_combo'):
+            self.account_combo['values'] = self.account_list
+            
+            if self.account_list:
+                self.account_var.set(self.account_list[0])
+        
+        if hasattr(self, 'log_message'):
+            self.log_message(f"🔄 {len(self.account_list)} اکانت تشخیص داده شد و به‌روزرسانی شد")
+        else:
+            print(f"🔄 {len(self.account_list)} اکانت تشخیص داده شد و به‌روزرسانی شد")
 
     def load_config(self):
         """بارگذاری تنظیمات از فایل کانفیگ"""
@@ -109,6 +465,12 @@ class TelegramAIMessenger:
                 {
                     "group_name": "getharemmeow",
                     "chat_id": "-4973474959"
+                }
+            ],
+            "private_chats": [
+                {
+                    "user_name": "دوست مهم",
+                    "chat_id": "8028348127"
                 }
             ],
             "base_message": "سلام! این یک پیام هوشمند است",
@@ -182,7 +544,8 @@ class TelegramAIMessenger:
         ttk.Button(control_frame, text="💾 ذخیره تنظیمات", command=self.save_settings).pack(side='left', padx=5)
         ttk.Button(control_frame, text="📱 باز کردن تلگرام", command=self.open_telegram).pack(side='left', padx=5)
         ttk.Button(control_frame, text="🤖 تست AI", command=self.test_ai).pack(side='left', padx=5)
-        ttk.Button(control_frame, text="👁️ خواندن و پاسخ به همه چت‌ها", command=self.start_read_and_reply).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="👁️ خواندن پیشرفته چت‌ها", command=self.start_read_and_reply).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="🔄 تشخیص اکانت‌ها", command=self.refresh_accounts).pack(side='left', padx=5)
         
         # وضعیت
         self.status_label = tk.Label(self.root, text="آماده", bg='#2c3e50', fg='#2ecc71', font=('Arial', 10, 'bold'))
@@ -209,11 +572,25 @@ class TelegramAIMessenger:
         self.account_combo = ttk.Combobox(parent, textvariable=self.account_var, values=self.account_list, width=67)
         self.account_combo.grid(row=0, column=1, pady=5, sticky='ew')
 
-        # انتخاب گروه
-        ttk.Label(parent, text="👥 انتخاب گروه:").grid(row=1, column=0, sticky='w', pady=5)
-        self.group_list = [g["group_name"] for g in self.config.get("groups", [])]
-        self.group_var = tk.StringVar(value=self.group_list[0] if self.group_list else "")
-        self.group_combo = ttk.Combobox(parent, textvariable=self.group_var, values=self.group_list, width=67)
+        # انتخاب گروه یا چت خصوصی
+        ttk.Label(parent, text="👥 انتخاب گروه/چت:").grid(row=1, column=0, sticky='w', pady=5)
+        
+        # ترکیب گروه‌ها و چت‌های خصوصی
+        groups = self.config.get("groups", [])
+        private_chats = self.config.get("private_chats", [])
+        
+        self.chat_list = []
+        for group in groups:
+            self.chat_list.append(f"📢 {group['group_name']}")
+        for pv in private_chats:
+            self.chat_list.append(f"💬 {pv['user_name']}")
+        
+        # اگر هیچ گروه/چت تعریف نشده، از تنظیمات قدیمی استفاده کن
+        if not self.chat_list and "group_name" in self.config:
+            self.chat_list.append(f"📢 {self.config['group_name']}")
+        
+        self.group_var = tk.StringVar(value=self.chat_list[0] if self.chat_list else "")
+        self.group_combo = ttk.Combobox(parent, textvariable=self.group_var, values=self.chat_list, width=67)
         self.group_combo.grid(row=1, column=1, pady=5, sticky='ew')
 
         # پیام پایه
@@ -452,27 +829,39 @@ class TelegramAIMessenger:
             messagebox.showerror("خطا", error_msg)
     
     def find_and_open_group(self):
-        """یافتن و باز کردن گروه با استفاده از تنظیمات جدید"""
+        """یافتن و باز کردن گروه یا چت خصوصی با استفاده از تنظیمات جدید"""
         try:
-            # دریافت اطلاعات گروه انتخاب شده
-            selected_group = self.group_var.get().strip()
-            group_info = next((g for g in self.config.get("groups", []) if g["group_name"] == selected_group), None)
+            # دریافت انتخاب کاربر
+            selected_chat = self.group_var.get().strip()
             
-            if not group_info:
-                # fallback به روش قدیمی اگر گروه جدید انتخاب نشده
+            chat_id = ""
+            chat_name = ""
+            
+            # تشخیص نوع چت (گروه یا خصوصی)
+            if selected_chat.startswith("📢 "):  # گروه
+                group_name = selected_chat[2:]  # حذف ایموجی
+                group_info = next((g for g in self.config.get("groups", []) if g["group_name"] == group_name), None)
+                if group_info:
+                    chat_id = group_info.get("chat_id", "")
+                    chat_name = group_info.get("group_name", "")
+            elif selected_chat.startswith("💬 "):  # چت خصوصی
+                user_name = selected_chat[2:]  # حذف ایموجی
+                pv_info = next((p for p in self.config.get("private_chats", []) if p["user_name"] == user_name), None)
+                if pv_info:
+                    chat_id = pv_info.get("chat_id", "")
+                    chat_name = pv_info.get("user_name", "")
+            else:
+                # fallback به روش قدیمی
                 if hasattr(self, 'chat_id_var') and hasattr(self, 'group_name_var'):
                     chat_id = self.chat_id_var.get().strip()
-                    group_name = self.group_name_var.get().strip()
+                    chat_name = self.group_name_var.get().strip()
                 else:
-                    raise ValueError("گروه انتخاب نشده یا وجود ندارد")
-            else:
-                chat_id = group_info.get("chat_id", "")
-                group_name = group_info.get("group_name", "")
+                    raise ValueError("چت انتخاب نشده یا وجود ندارد")
 
-            if not chat_id and not group_name:
-                raise ValueError("نام گروه یا Chat ID وارد نشده")
+            if not chat_id and not chat_name:
+                raise ValueError("نام چت یا Chat ID وارد نشده")
 
-            self.log_message(f"🔍 جستجو برای گروه: {group_name} / {chat_id}")
+            self.log_message(f"🔍 جستجو برای چت: {chat_name} / {chat_id}")
             
             # باز کردن جستجو
             pyautogui.hotkey('ctrl', 'k')
@@ -483,7 +872,7 @@ class TelegramAIMessenger:
             time.sleep(0.3)
             
             # جستجو (اولویت با Chat ID)
-            search_term = chat_id if chat_id else group_name
+            search_term = chat_id if chat_id else chat_name
             pyperclip.copy(search_term)
             pyautogui.hotkey('ctrl', 'v')
             time.sleep(2)
@@ -492,11 +881,13 @@ class TelegramAIMessenger:
             pyautogui.press('enter')
             time.sleep(2)
             
-            self.log_message("✅ گروه باز شد")
+            # تشخیص نوع چت برای لاگ
+            chat_type = "گروه" if selected_chat.startswith("📢") else "چت خصوصی"
+            self.log_message(f"✅ {chat_type} باز شد: {chat_name}")
             return True
             
         except Exception as e:
-            error_msg = f"خطا در یافتن گروه: {str(e)}"
+            error_msg = f"خطا در یافتن چت: {str(e)}"
             self.log_message(f"❌ {error_msg}")
             return False
     
@@ -586,7 +977,7 @@ class TelegramAIMessenger:
         
         # بررسی ورودی‌ها
         if not self.group_var.get().strip():
-            messagebox.showerror("خطا", "لطفاً گروه را انتخاب کنید")
+            messagebox.showerror("خطا", "لطفاً گروه یا چت خصوصی را انتخاب کنید")
             return
         
         if not self.base_message_text.get('1.0', tk.END).strip():
@@ -602,7 +993,10 @@ class TelegramAIMessenger:
         self.stop_button.config(state='normal')
         self.status_label.config(text="در حال اجرا...", fg='#e74c3c')
         
-        self.log_message("🚀 شروع ارسال خودکار پیام‌های هوشمند")
+        # تشخیص نوع چت برای لاگ
+        selected_chat = self.group_var.get().strip()
+        chat_type = "گروه" if selected_chat.startswith("📢") else "چت خصوصی"
+        self.log_message(f"🚀 شروع ارسال خودکار پیام‌های هوشمند به {chat_type}")
         
         # اجرا در thread جداگانه
         self.message_thread = threading.Thread(target=self.messaging_loop, daemon=True)

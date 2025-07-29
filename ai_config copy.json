@@ -1,0 +1,28 @@
+{
+  "telegram_path": "C:\\Program Files\\WindowsApps\\TelegramMessengerLLP.TelegramDesktop_5.16.5.0_x64__t4vj0pshhgkwm\\Telegram.exe",
+  "group_name": "getharemmeow",
+  "chat_id": "-4973474959",
+  "base_message": "سلام! این یک پیام هوشمند است",
+  "interval_seconds": 10.0,
+  "account_number": 1,
+  "ollama_url": "http://127.0.0.1:11500",
+  "ollama_model": "llama3.1:8b",
+  "ai_enabled": true,
+  "personality": "دوستانه و صمیمی",
+  "message_variety": true,
+  "use_emojis": true,
+  "telegram_accounts": [
+    {
+      "username": "account1",
+      "telegram_path": "C:\\Program Files\\WindowsApps\\TelegramMessengerLLP.TelegramDesktop_5.16.5.0_x64__t4vj0pshhgkwm\\Telegram.exe"
+    }
+  ],
+  "groups": [
+    {
+      "group_name": "getharemmeow",
+      "chat_id": "-4973474959"
+    }
+  ],
+  "selected_account": "account1",
+  "selected_group": "getharemmeow"
+}
