@@ -50,7 +50,8 @@ class TelegramAIMessenger:
         
         try:
             if os.path.exists(self.config_file):
-                with open(self.config_file, 'r', encoding='utf-8') as f:
+                with open(self.config_file, 'r', encoding='utf-8') as 
+                f:
                     self.config = json.load(f)
                 # اضافه کردن کلیدهای جدید در صورت عدم وجود
                 for key, value in default_config.items():
