@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 import io
+import pygetwindow as gw
 
 class TelegramUIDetector:
     """کلاس هوشمند برای تشخیص عناصر رابط کاربری تلگرام"""
@@ -247,13 +248,9 @@ class TelegramUIDetector:
 class TelegramAIMessenger:
     def __init__(self):
         self.is_running = False
-        self.monitoring_active = False
         self.message_thread = None
-        self.monitoring_thread = None
         self.config_file = "ai_config.json"
         self.detected_accounts = []
-        self.last_screenshot = None
-        self.screenshot_interval = 3  # ثانیه
         
         # تشخیص هوشمند UI
         self.ui_detector = TelegramUIDetector()
@@ -269,6 +266,243 @@ class TelegramAIMessenger:
         
         self.setup_gui()
     
+    def screenshot_telegram_and_reply(self):
+        """
+        فقط از پنجره تلگرام با مسیر مشخص اسکرین‌شات بگیر و چت‌ها را شناسایی و پاسخ بده
+        """
+        # گرفتن مسیر تلگرام از کانفیگ
+        selected_account = self.account_var.get().strip() if hasattr(self, 'account_var') else "اکانت اصلی"
+        account_info = next((acc for acc in self.config.get("telegram_accounts", []) if acc["username"] == selected_account), None)
+        
+        if not account_info:
+            self.log_message("❌ اطلاعات اکانت انتخاب شده پیدا نشد!")
+            return
+        
+        telegram_path = account_info.get("telegram_path", "")
+        self.log_message(f"🖼️ شروع اسکرین گرفتن از تلگرام: {selected_account}")
+        
+        try:
+            # پیدا کردن پنجره تلگرام
+            windows = gw.getWindowsWithTitle('Telegram')
+            target_window = None
+            
+            # اگر چندین پنجره تلگرام باز است، سعی کن مناسب ترین را پیدا کن
+            if windows:
+                target_window = windows[0]  # اولی را انتخاب کن
+                self.log_message(f"✅ پنجره تلگرام پیدا شد: {target_window.title}")
+            else:
+                self.log_message("❌ هیچ پنجره تلگرامی پیدا نشد!")
+                # سعی کن تلگرام را باز کن
+                self.open_telegram()
+                time.sleep(3)
+                windows = gw.getWindowsWithTitle('Telegram')
+                if windows:
+                    target_window = windows[0]
+                else:
+                    return
+            
+            # فعال‌سازی پنجره و گرفتن اسکرین‌شات
+            target_window.activate()
+            time.sleep(1.5)
+            
+            # اطمینان از اینکه پنجره کاملاً قابل مشاهده است
+            target_window.restore()
+            time.sleep(0.5)
+            
+            left, top, width, height = target_window.left, target_window.top, target_window.width, target_window.height
+            self.log_message(f"📏 ابعاد پنجره: {width}x{height} در موقعیت ({left}, {top})")
+            
+            # گرفتن اسکرین‌شات از پنجره تلگرام
+            screenshot = pyautogui.screenshot(region=(left, top, width, height))
+            screenshot.save('telegram_screenshot.png')
+            self.log_message("✅ اسکرین‌شات از تلگرام ذخیره شد!")
+            
+            # تنظیم detector برای ابعاد جدید
+            self.ui_detector.screen_width = width
+            self.ui_detector.screen_height = height
+            
+            # تشخیص ساختار پنجره تلگرام
+            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            self.log_message("🔍 شروع تشخیص چت‌ها از اسکرین‌شات...")
+            
+            # تنظیم نواحی بر اساس ابعاد پنجره
+            self.ui_detector.chat_list_region = (0, 80, int(width * 0.35), height - 160)
+            self.ui_detector.message_area_region = (int(width * 0.35), 80, int(width * 0.65), height - 160)
+            self.ui_detector.input_box_region = (int(width * 0.35), height - 80, int(width * 0.6), 40)
+            self.ui_detector.send_button_region = (int(width * 0.95) - 50, height - 80, 50, 40)
+            
+            # تشخیص چت‌های خوانده نشده (اولویت)
+            unread_chats = self.detect_unread_chats_from_screenshot(img)
+            if unread_chats:
+                self.log_message(f"📬 {len(unread_chats)} چت خوانده نشده تشخیص داده شد")
+                
+                for i, (chat_x, chat_y) in enumerate(unread_chats[:5]):  # حداکثر 5 چت خوانده نشده
+                    if not self.is_running:
+                        break
+                    
+                    # محاسبه موقعیت مطلق
+                    abs_x = left + chat_x
+                    abs_y = top + chat_y
+                    
+                    self.log_message(f"📨 کلیک روی چت خوانده نشده {i+1} در ({abs_x}, {abs_y})")
+                    pyautogui.click(abs_x, abs_y)
+                    time.sleep(2)
+                    
+                    # دریافت نام چت
+                    chat_name = self.get_current_chat_name()
+                    self.log_message(f"💬 پردازش چت خوانده نشده: {chat_name}")
+                    
+                    # خواندن پیام‌ها
+                    last_messages = self.smart_read_recent_messages()
+                    
+                    if last_messages:
+                        self.log_message(f"📖 {len(last_messages)} پیام خوانده شد")
+                        
+                        # تولید پاسخ
+                        context = f"چت خوانده نشده: {chat_name}\nپیام‌های جدید:\n" + "\n".join(last_messages[-3:])
+                        smart_reply = self.generate_contextual_reply(context)
+                        
+                        # ارسال پاسخ
+                        if self.smart_send_message(smart_reply):
+                            self.log_message(f"✅ پاسخ ارسال شد به {chat_name}: {smart_reply[:50]}...")
+                        else:
+                            self.log_message(f"❌ خطا در ارسال پاسخ به {chat_name}")
+                    else:
+                        self.log_message(f"⚠️ پیامی در {chat_name} یافت نشد")
+                    
+                    time.sleep(2)
+            
+            # تشخیص چت‌های عادی
+            chat_positions = self.detect_chats_from_screenshot(img)
+            if chat_positions:
+                self.log_message(f"🎯 {len(chat_positions)} چت عادی تشخیص داده شد")
+                
+                for i, (chat_x, chat_y) in enumerate(chat_positions[:10]):  # حداکثر 10 چت
+                    if not self.is_running:
+                        break
+                    
+                    # محاسبه موقعیت مطلق
+                    abs_x = left + chat_x
+                    abs_y = top + chat_y
+                    
+                    self.log_message(f"🔍 کلیک روی چت {i+1} در ({abs_x}, {abs_y})")
+                    pyautogui.click(abs_x, abs_y)
+                    time.sleep(1.5)
+                    
+                    # دریافت نام چت
+                    chat_name = self.get_current_chat_name()
+                    
+                    # بررسی اینکه این چت قبلاً پردازش نشده باشد
+                    if chat_name == "نامشخص":
+                        continue
+                    
+                    self.log_message(f"💬 بررسی چت: {chat_name}")
+                    
+                    # خواندن پیام‌ها
+                    last_messages = self.smart_read_recent_messages()
+                    
+                    if last_messages:
+                        # بررسی نیاز به پاسخ
+                        needs_reply = self.analyze_need_for_reply(last_messages, chat_name)
+                        
+                        if needs_reply:
+                            self.log_message(f"✅ چت {chat_name} نیاز به پاسخ دارد")
+                            
+                            # تولید پاسخ
+                            context = f"چت: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(last_messages[-3:])
+                            smart_reply = self.generate_contextual_reply(context)
+                            
+                            # ارسال پاسخ
+                            if self.smart_send_message(smart_reply):
+                                self.log_message(f"✅ پاسخ ارسال شد به {chat_name}: {smart_reply[:50]}...")
+                            else:
+                                self.log_message(f"❌ خطا در ارسال پاسخ به {chat_name}")
+                        else:
+                            self.log_message(f"⏭️ چت {chat_name} نیاز به پاسخ ندارد")
+                    
+                    time.sleep(2)
+            
+            self.log_message("✅ پردازش اسکرین‌شات و پاسخ‌دهی تمام شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در اسکرین گرفتن و پاسخ‌دهی: {e}")
+            import traceback
+            self.log_message(f"جزئیات خطا: {traceback.format_exc()}")
+
+    def detect_unread_chats_from_screenshot(self, img):
+        """تشخیص چت‌های خوانده نشده از اسکرین‌شات"""
+        try:
+            # تبدیل به HSV برای تشخیص رنگ آبی badge ها
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            
+            # رنگ آبی badge های خوانده نشده
+            blue_lower = np.array([100, 100, 100])
+            blue_upper = np.array([130, 255, 255])
+            blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
+            
+            # پیدا کردن دایره‌های کوچک (badge ها)
+            circles = cv2.HoughCircles(blue_mask, cv2.HOUGH_GRADIENT, 1, 20,
+                                     param1=30, param2=15, minRadius=5, maxRadius=20)
+            
+            unread_positions = []
+            if circles is not None:
+                circles = np.round(circles[0, :]).astype("int")
+                for (x, y, r) in circles:
+                    # تخمین موقعیت چت بر اساس badge
+                    chat_x = 175  # وسط لیست چت‌ها
+                    chat_y = y
+                    unread_positions.append((chat_x, chat_y))
+            
+            return unread_positions
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تشخیص چت‌های خوانده نشده: {e}")
+            return []
+
+    def detect_chats_from_screenshot(self, img):
+        """تشخیص چت‌ها از اسکرین‌شات"""
+        try:
+            # تبدیل به grayscale
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # تشخیص خطوط افقی (جداکننده چت‌ها)
+            horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
+            detect_horizontal = cv2.morphologyEx(gray, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+            cnts = cv2.findContours(detect_horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+            
+            chat_positions = []
+            for c in cnts:
+                x, y, w, h = cv2.boundingRect(c)
+                if w > 200:  # عرض مناسب برای یک چت
+                    chat_x = 175  # وسط لیست چت‌ها
+                    chat_y = y + 30  # وسط آیتم چت
+                    chat_positions.append((chat_x, chat_y))
+            
+            # اگر خط‌ها پیدا نشد، از روش تقسیم‌بندی یکنواخت استفاده کن
+            if not chat_positions:
+                chat_height = 70  # تقریبی ارتفاع هر چت
+                num_chats = min(15, (self.ui_detector.screen_height - 160) // chat_height)
+                for i in range(num_chats):
+                    chat_x = 175
+                    chat_y = 115 + (i * chat_height)
+                    chat_positions.append((chat_x, chat_y))
+            
+            return chat_positions[:15]  # حداکثر 15 چت
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تشخیص چت‌ها: {e}")
+            return []
+
+    def start_screenshot_and_reply(self):
+        """شروع اسکرین گرفتن و پاسخ‌دهی"""
+        if not self.is_running:
+            self.is_running = True
+            self.log_message("🖼️ شروع اسکرین گرفتن و پاسخ‌دهی...")
+            threading.Thread(target=self.screenshot_telegram_and_reply, daemon=True).start()
+        else:
+            self.log_message("⚠️ عملیات قبلی هنوز در حال اجرا است")
+
     def read_and_reply_all_chats(self):
         """
         خواندن همه چت‌ها و پاسخ خودکار به پیام‌های جدید هر کاربر
@@ -942,306 +1176,7 @@ class TelegramAIMessenger:
             
         except Exception as e:
             self.log_message(f"❌ خطا در تحلیل نیاز به پاسخ: {e}")
-    def continuous_telegram_monitoring(self):
-        """مانیتورینگ مداوم تلگرام و پاسخ‌دهی خودکار"""
-        self.log_message("🔄 شروع مانیتورینگ مداوم تلگرام...")
-        
-        try:
-            # اطمینان از باز بودن تلگرام
-            telegram_path = "C:\\Program Files\\WindowsApps\\TelegramMessengerLLP.TelegramDesktop_5.16.5.0_x64__t4vj0pshhgkwm\\Telegram.exe"
-            self.ensure_telegram_is_running(telegram_path)
-            
-            consecutive_errors = 0
-            max_errors = 5
-            
-            while self.monitoring_active:
-                try:
-                    # گرفتن اسکرین‌شات
-                    current_screenshot = self.take_smart_screenshot()
-                    
-                    if current_screenshot is not None:
-                        # تشخیص تغییرات در صفحه
-                        if self.detect_screen_changes(current_screenshot):
-                            self.log_message("📱 تغییر در صفحه تلگرام تشخیص داده شد")
-                            
-                            # تشخیص و پردازش چت‌های جدید
-                            self.process_telegram_interface(current_screenshot)
-                            
-                            # ذخیره اسکرین‌شات برای مقایسه بعدی
-                            self.last_screenshot = current_screenshot.copy()
-                        
-                        consecutive_errors = 0
-                    else:
-                        consecutive_errors += 1
-                        self.log_message(f"⚠️ خطا در گرفتن اسکرین‌شات (تلاش {consecutive_errors})")
-                    
-                    # اگر خطاهای متوالی زیاد شد، تلاش برای بازگرداندن تلگرام
-                    if consecutive_errors >= max_errors:
-                        self.log_message("🔄 تلاش برای بازگرداندن تلگرام...")
-                        self.ensure_telegram_is_running(telegram_path)
-                        consecutive_errors = 0
-                    
-                    # انتظار بین اسکرین‌شات‌ها
-                    time.sleep(self.screenshot_interval)
-                    
-                except Exception as e:
-                    self.log_message(f"❌ خطا در مانیتورینگ: {e}")
-                    consecutive_errors += 1
-                    time.sleep(self.screenshot_interval)
-            
-        except Exception as e:
-            self.log_message(f"❌ خطای کلی در مانیتورینگ: {e}")
-        finally:
-            self.monitoring_active = False
-            self.log_message("⏹️ مانیتورینگ متوقف شد")
-
-    def ensure_telegram_is_running(self, telegram_path):
-        """اطمینان از اجرای تلگرام"""
-        try:
-            # بررسی اجرای تلگرام
-            import psutil
-            telegram_running = False
-            
-            for proc in psutil.process_iter(['pid', 'name', 'exe']):
-                try:
-                    if proc.info['name'] and 'telegram' in proc.info['name'].lower():
-                        telegram_running = True
-                        break
-                except:
-                    continue
-            
-            if not telegram_running:
-                self.log_message("📱 راه‌اندازی تلگرام...")
-                subprocess.Popen([telegram_path])
-                time.sleep(5)  # انتظار برای بارگذاری کامل
-            
-            # تنظیم فوکوس روی تلگرام
-            self.focus_telegram_window()
-            
-        except Exception as e:
-            self.log_message(f"❌ خطا در راه‌اندازی تلگرام: {e}")
-
-    def focus_telegram_window(self):
-        """فوکوس کردن پنجره تلگرام"""
-        try:
-            import win32gui
-            import win32con
-            
-            def enum_windows_callback(hwnd, windows):
-                if win32gui.IsWindowVisible(hwnd):
-                    window_text = win32gui.GetWindowText(hwnd)
-                    if 'telegram' in window_text.lower():
-                        windows.append((hwnd, window_text))
-                return True
-            
-            windows = []
-            win32gui.EnumWindows(enum_windows_callback, windows)
-            
-            if windows:
-                hwnd = windows[0][0]
-                win32gui.SetForegroundWindow(hwnd)
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-                self.log_message("✅ فوکوس روی پنجره تلگرام تنظیم شد")
-            else:
-                self.log_message("⚠️ پنجره تلگرام پیدا نشد")
-                
-        except ImportError:
-            self.log_message("⚠️ pywin32 نصب نشده، فوکوس خودکار غیرفعال")
-        except Exception as e:
-            self.log_message(f"❌ خطا در تنظیم فوکوس: {e}")
-
-    def take_smart_screenshot(self):
-        """گرفتن اسکرین‌شات هوشمند از تلگرام"""
-        try:
-            # گرفتن اسکرین‌شات کامل
-            screenshot = pyautogui.screenshot()
-            screenshot_cv = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-            
-            # تشخیص پنجره تلگرام
-            if self.detect_telegram_window_in_screenshot(screenshot_cv):
-                return screenshot_cv
-            else:
-                self.log_message("⚠️ پنجره تلگرام در اسکرین‌شات یافت نشد")
-                return None
-                
-        except Exception as e:
-            self.log_message(f"❌ خطا در گرفتن اسکرین‌شات: {e}")
-            return None
-
-    def detect_telegram_window_in_screenshot(self, screenshot):
-        """تشخیص پنجره تلگرام در اسکرین‌شات"""
-        try:
-            # تشخیص رنگ آبی مشخصه تلگرام
-            hsv = cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
-            
-            # رنگ‌های آبی تلگرام
-            blue_lower = np.array([100, 50, 50])
-            blue_upper = np.array([130, 255, 255])
-            blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
-            
-            # پیدا کردن نواحی آبی
-            contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for contour in contours:
-                area = cv2.contourArea(contour)
-                if area > 5000:  # ناحیه به اندازه کافی بزرگ
-                    x, y, w, h = cv2.boundingRect(contour)
-                    if w > 400 and h > 300:  # اندازه مناسب برای پنجره تلگرام
-                        self.ui_detector.telegram_window_region = (x, y, w, h)
-                        return True
-            
-            return False
-            
-        except Exception as e:
-            self.log_message(f"❌ خطا در تشخیص پنجره تلگرام: {e}")
-            return False
-
-    def detect_screen_changes(self, current_screenshot):
-        """تشخیص تغییرات در صفحه"""
-        try:
-            if self.last_screenshot is None:
-                return True  # اولین بار همیشه تغییر محسوب می‌شود
-            
-            # مقایسه با اسکرین‌شات قبلی
-            diff = cv2.absdiff(self.last_screenshot, current_screenshot)
-            gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-            
-            # محاسبه مقدار تغییر
-            change_percentage = (cv2.countNonZero(gray_diff) / gray_diff.size) * 100
-            
-            # اگر تغییر بیش از 5% باشد، محسوب می‌شود
-            return change_percentage > 5.0
-            
-        except Exception as e:
-            self.log_message(f"❌ خطا در تشخیص تغییرات: {e}")
-            return True  # در صورت خطا، فرض بر تغییر
-
-    def process_telegram_interface(self, screenshot):
-        """پردازش رابط تلگرام و تشخیص چت‌های جدید"""
-        try:
-            # به‌روزرسانی تشخیص‌گر UI با اسکرین‌شات جدید
-            self.ui_detector.current_screenshot = screenshot
-            
-            # تشخیص چت‌های خوانده نشده
-            unread_chats = self.detect_unread_chats_from_screenshot(screenshot)
-            
-            if unread_chats:
-                self.log_message(f"📬 {len(unread_chats)} چت خوانده نشده تشخیص داده شد")
-                
-                for chat_position in unread_chats[:3]:  # حداکثر 3 چت در هر بار
-                    self.process_single_chat(chat_position)
-                    time.sleep(2)
-            
-            # تشخیص چت‌های عادی
-            chat_positions = self.detect_chat_positions_from_screenshot(screenshot)
-            
-            if chat_positions:
-                self.log_message(f"💬 {len(chat_positions)} چت تشخیص داده شد")
-                
-                for chat_position in chat_positions[:5]:  # حداکثر 5 چت
-                    if not self.monitoring_active:
-                        break
-                    
-                    self.process_single_chat(chat_position)
-                    time.sleep(1)
-            
-        except Exception as e:
-            self.log_message(f"❌ خطا در پردازش رابط تلگرام: {e}")
-
-    def detect_unread_chats_from_screenshot(self, screenshot):
-        """تشخیص چت‌های خوانده نشده از اسکرین‌شات"""
-        try:
-            # تشخیص دایره‌های آبی (badge های پیام خوانده نشده)
-            hsv = cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
-            blue_lower = np.array([100, 100, 100])
-            blue_upper = np.array([130, 255, 255])
-            blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
-            
-            # پیدا کردن دایره‌ها
-            circles = cv2.HoughCircles(blue_mask, cv2.HOUGH_GRADIENT, 1, 30,
-                                     param1=50, param2=20, minRadius=8, maxRadius=25)
-            
-            unread_positions = []
-            if circles is not None:
-                circles = np.round(circles[0, :]).astype("int")
-                for (x, y, r) in circles:
-                    # محاسبه موقعیت تقریبی چت مربوطه
-                    chat_x = max(50, x - 150)  # تقریباً 150 پیکسل سمت چپ
-                    chat_y = y
-                    unread_positions.append((chat_x, chat_y))
-            
-            return unread_positions
-            
-        except Exception as e:
-            self.log_message(f"❌ خطا در تشخیص چت‌های خوانده نشده: {e}")
-            return []
-
-    def detect_chat_positions_from_screenshot(self, screenshot):
-        """تشخیص موقعیت‌های چت از اسکرین‌شات"""
-        try:
-            # تبدیل به grayscale
-            gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
-            
-            # تشخیص خطوط افقی (جداکننده چت‌ها)
-            horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1))
-            horizontal_lines = cv2.morphologyEx(gray, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
-            
-            # پیدا کردن contours
-            contours, _ = cv2.findContours(horizontal_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            chat_positions = []
-            for contour in contours:
-                x, y, w, h = cv2.boundingRect(contour)
-                if w > 200 and x < 400:  # فقط در ناحیه لیست چت‌ها
-                    chat_x = x + w // 2
-                    chat_y = y + 35  # وسط ارتفاع چت
-                    chat_positions.append((chat_x, chat_y))
-            
-            # مرتب‌سازی بر اساس موقعیت عمودی
-            chat_positions.sort(key=lambda pos: pos[1])
-            
-            return chat_positions[:10]  # حداکثر 10 چت
-            
-        except Exception as e:
-            self.log_message(f"❌ خطا در تشخیص موقعیت چت‌ها: {e}")
-            return []
-
-    def process_single_chat(self, chat_position):
-        """پردازش یک چت مشخص"""
-        try:
-            # کلیک روی چت
-            pyautogui.click(chat_position[0], chat_position[1])
-            time.sleep(1.5)
-            
-            # دریافت نام چت
-            chat_name = self.get_current_chat_name()
-            
-            if chat_name == "نامشخص":
-                return
-            
-            self.log_message(f"📱 پردازش چت: {chat_name}")
-            
-            # خواندن پیام‌های اخیر
-            messages = self.smart_read_recent_messages()
-            
-            if messages:
-                # تحلیل نیاز به پاسخ
-                needs_reply = self.analyze_need_for_reply(messages, chat_name)
-                
-                if needs_reply:
-                    # تولید و ارسال پاسخ
-                    context = f"چت: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(messages[-2:])
-                    reply = self.generate_contextual_reply(context)
-                    
-                    if self.smart_send_message(reply):
-                        self.log_message(f"✅ پاسخ ارسال شد: {reply[:50]}...")
-                    else:
-                        self.log_message(f"❌ خطا در ارسال پاسخ به {chat_name}")
-                else:
-                    self.log_message(f"ℹ️ {chat_name}: نیازی به پاسخ نیست")
-            
-        except Exception as e:
-            self.log_message(f"❌ خطا در پردازش چت: {e}")
+            return True  # در صورت خطا، فرض بر پاسخ‌دهی
         """خواندن پیام‌های اخیر در چت فعلی با بهبود تشخیص"""
         messages = []
         try:
@@ -1487,24 +1422,6 @@ class TelegramAIMessenger:
             self.log_message(f"❌ خطا در ارسال پیام: {e}")
             return False
 
-    def start_continuous_monitoring(self):
-        """شروع مانیتورینگ مداوم"""
-        if not self.monitoring_active:
-            self.monitoring_active = True
-            self.log_message("🔄 شروع مانیتورینگ مداوم تلگرام...")
-            self.monitoring_thread = threading.Thread(target=self.continuous_telegram_monitoring, daemon=True)
-            self.monitoring_thread.start()
-        else:
-            self.log_message("⚠️ مانیتورینگ در حال اجرا است")
-
-    def stop_continuous_monitoring(self):
-        """توقف مانیتورینگ مداوم"""
-        if self.monitoring_active:
-            self.monitoring_active = False
-            self.log_message("⏹️ توقف مانیتورینگ مداوم...")
-        else:
-            self.log_message("ℹ️ مانیتورینگ فعال نیست")
-
     def start_enhanced_detection(self):
         """شروع تشخیص هوشمند چت‌ها و پاسخ‌دهی"""
         if not self.is_running:
@@ -1642,8 +1559,7 @@ class TelegramAIMessenger:
         ttk.Button(control_frame, text="🤖 تست AI", command=self.test_ai).pack(side='left', padx=5)
         ttk.Button(control_frame, text="👁️ خواندن پیشرفته چت‌ها", command=self.start_read_and_reply).pack(side='left', padx=5)
         ttk.Button(control_frame, text="🤖 تشخیص هوشمند چت‌ها", command=self.start_enhanced_detection).pack(side='left', padx=5)
-        ttk.Button(control_frame, text="� مانیتورینگ مداوم", command=self.start_continuous_monitoring).pack(side='left', padx=5)
-        ttk.Button(control_frame, text="⏹️ توقف مانیتورینگ", command=self.stop_continuous_monitoring).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="�️ اسکرین تلگرام + پاسخ", command=self.start_screenshot_and_reply).pack(side='left', padx=5)
         ttk.Button(control_frame, text="�🔄 تشخیص اکانت‌ها", command=self.refresh_accounts).pack(side='left', padx=5)
         
         # وضعیت
@@ -2120,16 +2036,15 @@ class TelegramAIMessenger:
     
     def stop_messaging(self):
         """توقف ارسال خودکار پیام"""
-        if not self.is_running and not self.monitoring_active:
+        if not self.is_running:
             return
         
         self.is_running = False
-        self.monitoring_active = False
         self.start_button.config(state='normal')
         self.stop_button.config(state='disabled')
         self.status_label.config(text="متوقف شده", fg='#f39c12')
         
-        self.log_message("⏹️ تمام عملیات خودکار متوقف شد")
+        self.log_message("⏹️ ارسال خودکار پیام متوقف شد")
     
     def save_settings(self):
         """ذخیره تنظیمات"""
