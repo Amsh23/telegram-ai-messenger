@@ -20,6 +20,229 @@ from datetime import datetime
 import re
 import winreg
 from pathlib import Path
+import cv2
+import numpy as np
+from PIL import Image, ImageTk
+import io
+
+class TelegramUIDetector:
+    """کلاس هوشمند برای تشخیص عناصر رابط کاربری تلگرام"""
+    
+    def __init__(self):
+        self.screen_width, self.screen_height = pyautogui.size()
+        self.confidence_threshold = 0.8
+        self.chat_list_region = None
+        self.message_area_region = None
+        self.input_box_region = None
+        self.send_button_region = None
+        
+    def take_screenshot(self, region=None):
+        """گرفتن اسکرین‌شات از ناحیه مشخص"""
+        try:
+            if region:
+                screenshot = pyautogui.screenshot(region=region)
+            else:
+                screenshot = pyautogui.screenshot()
+            return cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            print(f"خطا در گرفتن اسکرین‌شات: {e}")
+            return None
+    
+    def detect_telegram_window(self):
+        """تشخیص پنجره تلگرام و تعیین نواحی مختلف"""
+        try:
+            screenshot = self.take_screenshot()
+            if screenshot is None:
+                return False
+            
+            # تشخیص رنگ‌های مشخصه تلگرام (آبی تیره برای header)
+            # رنگ header تلگرام معمولاً در حدود این مقادیر است
+            telegram_blue_lower = np.array([100, 50, 50])  # HSV
+            telegram_blue_upper = np.array([130, 255, 255])
+            
+            hsv = cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
+            blue_mask = cv2.inRange(hsv, telegram_blue_lower, telegram_blue_upper)
+            
+            # پیدا کردن contours
+            contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                # بزرگترین contour که احتمالاً header تلگرام است
+                largest_contour = max(contours, key=cv2.contourArea)
+                x, y, w, h = cv2.boundingRect(largest_contour)
+                
+                if w > 400 and h > 30:  # حداقل اندازه برای header
+                    # تعیین نواحی بر اساس موقعیت header
+                    self.chat_list_region = (0, y + h, 350, self.screen_height - y - h)
+                    self.message_area_region = (350, y + h, self.screen_width - 350, self.screen_height - y - h - 80)
+                    self.input_box_region = (350, self.screen_height - 80, self.screen_width - 350 - 50, 40)
+                    self.send_button_region = (self.screen_width - 50, self.screen_height - 80, 50, 40)
+                    return True
+            
+            # روش جایگزین: تعیین نواحی بر اساس اندازه صفحه
+            self.set_default_regions()
+            return True
+            
+        except Exception as e:
+            print(f"خطا در تشخیص پنجره تلگرام: {e}")
+            self.set_default_regions()
+            return False
+    
+    def set_default_regions(self):
+        """تنظیم نواحی پیش‌فرض"""
+        self.chat_list_region = (0, 80, 350, self.screen_height - 160)
+        self.message_area_region = (350, 80, self.screen_width - 350, self.screen_height - 160)
+        self.input_box_region = (350, self.screen_height - 80, self.screen_width - 400, 40)
+        self.send_button_region = (self.screen_width - 50, self.screen_height - 80, 50, 40)
+    
+    def find_chat_items(self):
+        """پیدا کردن آیتم‌های چت در لیست"""
+        try:
+            if not self.chat_list_region:
+                self.detect_telegram_window()
+            
+            screenshot = self.take_screenshot(self.chat_list_region)
+            if screenshot is None:
+                return []
+            
+            # تبدیل به grayscale برای بهتر کردن تشخیص
+            gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+            
+            # تشخیص خطوط افقی (جداکننده چت‌ها)
+            horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
+            detect_horizontal = cv2.morphologyEx(gray, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+            cnts = cv2.findContours(detect_horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+            
+            chat_positions = []
+            for c in cnts:
+                x, y, w, h = cv2.boundingRect(c)
+                if w > 200:  # عرض مناسب برای یک چت
+                    # محاسبه موقعیت واقعی روی صفحه
+                    real_x = self.chat_list_region[0] + x + w//2
+                    real_y = self.chat_list_region[1] + y + 30  # وسط آیتم چت
+                    chat_positions.append((real_x, real_y))
+            
+            # اگر خط‌ها پیدا نشد، از روش تقسیم‌بندی یکنواخت استفاده کن
+            if not chat_positions:
+                chat_height = 70  # تقریبی ارتفاع هر چت
+                num_chats = self.chat_list_region[3] // chat_height
+                for i in range(min(15, num_chats)):  # حداکثر 15 چت
+                    x = self.chat_list_region[0] + 175  # وسط لیست
+                    y = self.chat_list_region[1] + 35 + (i * chat_height)
+                    chat_positions.append((x, y))
+            
+            return chat_positions[:15]  # حداکثر 15 چت برمی‌گردانیم
+            
+        except Exception as e:
+            print(f"خطا در یافتن آیتم‌های چت: {e}")
+            return []
+    
+    def find_message_input_box(self):
+        """پیدا کردن باکس ورودی پیام"""
+        try:
+            if not self.input_box_region:
+                self.detect_telegram_window()
+            
+            screenshot = self.take_screenshot(self.input_box_region)
+            if screenshot is None:
+                return None
+            
+            # تشخیص ناحیه‌های روشن (باکس ورودی معمولاً روشن است)
+            gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+            
+            # threshold برای پیدا کردن نواحی روشن
+            _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+            
+            # پیدا کردن contours
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                if w > 200 and 20 < h < 60:  # اندازه مناسب برای input box
+                    # محاسبه موقعیت واقعی
+                    real_x = self.input_box_region[0] + x + w//2
+                    real_y = self.input_box_region[1] + y + h//2
+                    return (real_x, real_y)
+            
+            # موقعیت پیش‌فرض
+            return (self.input_box_region[0] + self.input_box_region[2]//2, 
+                   self.input_box_region[1] + self.input_box_region[3]//2)
+            
+        except Exception as e:
+            print(f"خطا در یافتن باکس ورودی: {e}")
+            return None
+    
+    def find_send_button(self):
+        """پیدا کردن دکمه ارسال"""
+        try:
+            if not self.send_button_region:
+                self.detect_telegram_window()
+            
+            screenshot = self.take_screenshot(self.send_button_region)
+            if screenshot is None:
+                return None
+            
+            # تشخیص رنگ آبی دکمه ارسال
+            hsv = cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
+            blue_lower = np.array([100, 100, 100])
+            blue_upper = np.array([130, 255, 255])
+            blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
+            
+            # پیدا کردن contours
+            contours, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                largest_contour = max(contours, key=cv2.contourArea)
+                x, y, w, h = cv2.boundingRect(largest_contour)
+                
+                if cv2.contourArea(largest_contour) > 100:  # حداقل اندازه
+                    real_x = self.send_button_region[0] + x + w//2
+                    real_y = self.send_button_region[1] + y + h//2
+                    return (real_x, real_y)
+            
+            # موقعیت پیش‌فرض
+            return (self.send_button_region[0] + self.send_button_region[2]//2,
+                   self.send_button_region[1] + self.send_button_region[3]//2)
+            
+        except Exception as e:
+            print(f"خطا در یافتن دکمه ارسال: {e}")
+            return None
+    
+    def detect_unread_chats(self):
+        """تشخیص چت‌های خوانده نشده"""
+        try:
+            if not self.chat_list_region:
+                self.detect_telegram_window()
+            
+            screenshot = self.take_screenshot(self.chat_list_region)
+            if screenshot is None:
+                return []
+            
+            # تشخیص رنگ آبی badge های پیام خوانده نشده
+            hsv = cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
+            blue_lower = np.array([100, 100, 100])
+            blue_upper = np.array([130, 255, 255])
+            blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
+            
+            # پیدا کردن دایره‌های کوچک (badge ها)
+            circles = cv2.HoughCircles(blue_mask, cv2.HOUGH_GRADIENT, 1, 20,
+                                     param1=30, param2=15, minRadius=5, maxRadius=20)
+            
+            unread_positions = []
+            if circles is not None:
+                circles = np.round(circles[0, :]).astype("int")
+                for (x, y, r) in circles:
+                    # تبدیل به موقعیت واقعی و تخمین موقعیت چت
+                    chat_x = self.chat_list_region[0] + 175
+                    chat_y = self.chat_list_region[1] + y
+                    unread_positions.append((chat_x, chat_y))
+            
+            return unread_positions
+            
+        except Exception as e:
+            print(f"خطا در تشخیص چت‌های خوانده نشده: {e}")
+            return []
 
 class TelegramAIMessenger:
     def __init__(self):
@@ -27,6 +250,10 @@ class TelegramAIMessenger:
         self.message_thread = None
         self.config_file = "ai_config.json"
         self.detected_accounts = []
+        
+        # تشخیص هوشمند UI
+        self.ui_detector = TelegramUIDetector()
+        
         self.load_config()
         
         # پیکربندی pyautogui
@@ -191,16 +418,131 @@ class TelegramAIMessenger:
             # اطمینان از باز بودن تلگرام
             time.sleep(2)
             
-            # تعداد چت‌هایی که بررسی شوند
-            max_chats = 15
+            # ابتدا همه گروه‌ها و چت‌های خصوصی تعریف شده را بررسی کن
+            groups = self.config.get("groups", [])
+            private_chats = self.config.get("private_chats", [])
             
-            for chat_index in range(max_chats):
+            all_chats = []
+            
+            # اضافه کردن گروه‌ها
+            for group in groups:
+                all_chats.append({
+                    "name": group["group_name"],
+                    "chat_id": group["chat_id"],
+                    "type": "group"
+                })
+            
+            # اضافه کردن چت‌های خصوصی
+            for pv in private_chats:
+                all_chats.append({
+                    "name": pv["user_name"],
+                    "chat_id": pv["chat_id"],
+                    "type": "private"
+                })
+            
+            self.log_message(f"📋 {len(all_chats)} چت برای بررسی پیدا شد")
+            
+            # بررسی هر چت تعریف شده
+            for chat_info in all_chats:
                 if not self.is_running:
                     break
                 
-                self.log_message(f"📋 بررسی چت {chat_index + 1}...")
+                chat_name = chat_info["name"]
+                chat_id = chat_info["chat_id"]
+                chat_type = "گروه" if chat_info["type"] == "group" else "چت خصوصی"
                 
-                # موقعیت چت در لیست (تنظیم شده برای رزولوشن‌های مختلف)
+                self.log_message(f"🔍 بررسی {chat_type}: {chat_name} ({chat_id})")
+                
+                # جستجو و باز کردن چت با Chat ID
+                if self.find_specific_chat_by_id(chat_id, chat_name):
+                    time.sleep(2)
+                    
+                    # خواندن آخرین پیام‌ها
+                    last_messages = self.read_recent_messages()
+                    
+                    if last_messages:
+                        self.log_message(f"� {len(last_messages)} پیام در {chat_name} پیدا شد")
+                        
+                        # تولید پاسخ هوشمند بر اساس کل مکالمه
+                        context = f"نام {chat_type}: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(last_messages[-3:])
+                        smart_reply = self.generate_contextual_reply(context)
+                        
+                        # ارسال پاسخ
+                        if self.send_message_to_current_chat(smart_reply):
+                            self.log_message(f"✅ پاسخ ارسال شد به {chat_name}: {smart_reply[:60]}...")
+                        else:
+                            self.log_message(f"❌ خطا در ارسال پاسخ به {chat_name}")
+                    else:
+                        self.log_message(f"⚠️ {chat_name}: پیام جدیدی یافت نشد")
+                else:
+                    self.log_message(f"❌ نتوانستم {chat_name} را پیدا کنم")
+                
+                time.sleep(3)  # انتظار بین چت‌ها
+            
+            # بررسی اضافی چت‌های دیگر که در لیست نیستند
+            self.log_message("🔄 بررسی چت‌های اضافی...")
+            self.scan_additional_chats()
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در خواندن چت‌ها: {e}")
+        
+        self.log_message("✅ خواندن پیشرفته و پاسخ‌دهی تمام شد.")
+
+    def find_specific_chat_by_id(self, chat_id, chat_name):
+        """پیدا کردن چت مشخص با Chat ID"""
+        try:
+            # باز کردن جستجو
+            pyautogui.hotkey('ctrl', 'k')
+            time.sleep(1.5)
+            
+            # پاک کردن جستجوی قبلی
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.3)
+            
+            # جستجو با Chat ID (اولویت اول)
+            search_term = chat_id
+            pyperclip.copy(search_term)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(2.5)
+            
+            # انتخاب اولین نتیجه
+            pyautogui.press('enter')
+            time.sleep(2)
+            
+            self.log_message(f"✅ چت باز شد: {chat_name}")
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در یافتن چت {chat_name}: {e}")
+            
+            # تلاش مجدد با نام چت
+            try:
+                pyautogui.hotkey('ctrl', 'k')
+                time.sleep(1)
+                pyautogui.hotkey('ctrl', 'a')
+                time.sleep(0.3)
+                
+                pyperclip.copy(chat_name)
+                pyautogui.hotkey('ctrl', 'v')
+                time.sleep(2)
+                pyautogui.press('enter')
+                time.sleep(2)
+                
+                self.log_message(f"✅ چت باز شد با نام: {chat_name}")
+                return True
+            except:
+                return False
+
+    def scan_additional_chats(self):
+        """بررسی چت‌های اضافی که در لیست نیستند"""
+        try:
+            max_additional_chats = 10
+            
+            for chat_index in range(max_additional_chats):
+                if not self.is_running:
+                    break
+                
+                # موقعیت چت در لیست
                 chat_x = 150
                 chat_y = 100 + (chat_index * 70)
                 
@@ -208,35 +550,35 @@ class TelegramAIMessenger:
                 pyautogui.click(chat_x, chat_y)
                 time.sleep(1.5)
                 
-                # خواندن نام چت/کاربر
+                # خواندن نام چت
                 chat_name = self.get_current_chat_name()
                 
-                # خواندن آخرین پیام‌ها
-                last_messages = self.read_recent_messages()
+                # بررسی اینکه آیا این چت در لیست تعریف شده است یا نه
+                is_defined = any(
+                    chat_name in group["group_name"] or chat_name in pv["user_name"]
+                    for group in self.config.get("groups", [])
+                    for pv in self.config.get("private_chats", [])
+                )
                 
-                if last_messages:
-                    self.log_message(f"👤 چت: {chat_name}")
-                    for i, msg in enumerate(last_messages[-3:]):  # نمایش 3 پیام آخر
-                        self.log_message(f"📨 پیام {i+1}: {msg[:100]}...")
+                if not is_defined and chat_name != "نامشخص":
+                    self.log_message(f"🆕 چت جدید پیدا شد: {chat_name}")
                     
-                    # تولید پاسخ هوشمند بر اساس کل مکالمه
-                    context = f"نام چت: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(last_messages[-3:])
-                    smart_reply = self.generate_contextual_reply(context)
+                    # خواندن پیام‌ها
+                    last_messages = self.read_recent_messages()
                     
-                    # ارسال پاسخ
-                    if self.send_message_to_current_chat(smart_reply):
-                        self.log_message(f"✅ پاسخ ارسال شد: {smart_reply[:80]}...")
-                    else:
-                        self.log_message("❌ خطا در ارسال پاسخ")
-                else:
-                    self.log_message(f"⚠️ چت {chat_index + 1}: پیامی یافت نشد")
+                    if last_messages:
+                        # تولید پاسخ
+                        context = f"چت جدید: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(last_messages[-2:])
+                        smart_reply = self.generate_contextual_reply(context)
+                        
+                        # ارسال پاسخ
+                        if self.send_message_to_current_chat(smart_reply):
+                            self.log_message(f"✅ پاسخ ارسال شد به چت جدید {chat_name}")
                 
-                time.sleep(2)  # انتظار بین چت‌ها
+                time.sleep(2)
                 
         except Exception as e:
-            self.log_message(f"❌ خطا در خواندن چت‌ها: {e}")
-        
-        self.log_message("✅ خواندن پیشرفته و پاسخ‌دهی تمام شد.")
+            self.log_message(f"❌ خطا در بررسی چت‌های اضافی: {e}")
 
     def get_current_chat_name(self):
         """دریافت نام چت/کاربر فعلی"""
@@ -256,57 +598,440 @@ class TelegramAIMessenger:
         except:
             return "نامشخص"
 
+    def smart_read_recent_messages(self):
+        """خواندن پیام‌های اخیر با تشخیص هوشمند ناحیه چت"""
+        messages = []
+        try:
+            # تشخیص ناحیه پیام‌ها
+            if self.ui_detector.message_area_region:
+                # اسکرول به آخرین پیام‌ها در ناحیه تشخیص داده شده
+                center_x = self.ui_detector.message_area_region[0] + self.ui_detector.message_area_region[2] // 2
+                center_y = self.ui_detector.message_area_region[1] + self.ui_detector.message_area_region[3] // 2
+                
+                pyautogui.scroll(-10, x=center_x, y=center_y)
+                time.sleep(1.5)
+                
+                # کلیک در ناحیه پیام‌ها
+                pyautogui.click(center_x, center_y)
+                time.sleep(0.5)
+            else:
+                # fallback به روش قدیمی
+                pyautogui.scroll(-10, x=500, y=400)
+                time.sleep(1.5)
+                pyautogui.click(500, 400)
+                time.sleep(0.5)
+            
+            # انتخاب همه و کپی
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.8)
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(0.8)
+            
+            all_text = pyperclip.paste()
+            
+            if all_text and len(all_text) > 10:
+                # تمیز کردن متن و جدا کردن پیام‌ها
+                lines = all_text.strip().split('\n')
+                
+                current_message = ""
+                for line in lines:
+                    line = line.strip()
+                    
+                    # فیلتر کردن خطوط غیرضروری
+                    if (line and 
+                        not line.isdigit() and 
+                        len(line) > 3 and
+                        not line.startswith('http') and
+                        not line.startswith('@') and
+                        not any(skip in line.lower() for skip in ['online', 'last seen', 'typing', 'در حال تایپ', 'آنلاین', 'آخرین بازدید'])):
+                        
+                        # تشخیص شروع پیام جدید (معمولاً با نام کاربر یا زمان)
+                        if (line.replace(':', '').replace(' ', '').isalnum() or 
+                            re.match(r'^\d{1,2}:\d{2}', line) or 
+                            any(time_pattern in line for time_pattern in ['AM', 'PM', 'ص', 'ع']) or
+                            len(line) < 20):
+                            
+                            # ذخیره پیام قبلی
+                            if current_message:
+                                messages.append(current_message.strip())
+                            current_message = line
+                        else:
+                            # ادامه پیام فعلی
+                            if current_message:
+                                current_message += " " + line
+                            else:
+                                current_message = line
+                
+                # ذخیره آخرین پیام
+                if current_message:
+                    messages.append(current_message.strip())
+            
+            # فیلتر نهایی پیام‌ها
+            filtered_messages = []
+            for msg in messages:
+                if (len(msg) > 10 and 
+                    not msg.isdigit() and 
+                    not msg.startswith('http') and
+                    any(char.isalpha() for char in msg)):  # باید حداقل یک حرف داشته باشد
+                    filtered_messages.append(msg)
+            
+            # حذف تکراری‌ها
+            unique_messages = []
+            for msg in filtered_messages:
+                if msg not in unique_messages:
+                    unique_messages.append(msg)
+            
+            return unique_messages[-7:] if unique_messages else []  # 7 پیام آخر
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در خواندن پیام‌ها: {e}")
+            return []
+
+    def smart_send_message(self, message):
+        """ارسال پیام با تشخیص هوشمند باکس ورودی و دکمه ارسال"""
+        try:
+            message_sent = False
+            
+            # تشخیص موقعیت باکس ورودی
+            input_position = self.ui_detector.find_message_input_box()
+            
+            if input_position:
+                self.log_message(f"🎯 باکس ورودی در موقعیت {input_position} تشخیص داده شد")
+                
+                # کلیک روی باکس ورودی
+                pyautogui.click(input_position[0], input_position[1])
+                time.sleep(0.5)
+                
+                # پاک کردن محتوای قبلی
+                pyautogui.hotkey('ctrl', 'a')
+                time.sleep(0.2)
+                
+                # کپی پیام به کلیپ‌بورد
+                pyperclip.copy(message)
+                time.sleep(0.3)
+                
+                # پیست پیام
+                pyautogui.hotkey('ctrl', 'v')
+                time.sleep(0.8)
+                
+                # تشخیص دکمه ارسال
+                send_button_position = self.ui_detector.find_send_button()
+                
+                if send_button_position:
+                    self.log_message(f"🎯 دکمه ارسال در موقعیت {send_button_position} تشخیص داده شد")
+                    # کلیک روی دکمه ارسال
+                    pyautogui.click(send_button_position[0], send_button_position[1])
+                    time.sleep(1)
+                    message_sent = True
+                else:
+                    # استفاده از Enter به عنوان جایگزین
+                    pyautogui.press('enter')
+                    time.sleep(1)
+                    message_sent = True
+                    
+            else:
+                self.log_message("⚠️ نتوانستم باکس ورودی را تشخیص دهم، از روش‌های جایگزین استفاده می‌کنم")
+                # fallback به روش‌های قدیمی
+                message_sent = self.fallback_send_message(message)
+            
+            return message_sent
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال هوشمند پیام: {e}")
+            # fallback به روش قدیمی
+            return self.fallback_send_message(message)
+
+    def fallback_send_message(self, message):
+        """روش جایگزین برای ارسال پیام"""
+        try:
+            # کلیک روی باکس تایپ پیام (متعدد موقعیت)
+            message_box_positions = [
+                (500, 650),  # موقعیت معمولی
+                (500, 680),  # موقعیت جایگزین 1
+                (400, 650),  # موقعیت جایگزین 2
+                (600, 650),  # موقعیت جایگزین 3
+            ]
+            
+            for x, y in message_box_positions:
+                try:
+                    # کلیک روی باکس پیام
+                    pyautogui.click(x, y)
+                    time.sleep(0.5)
+                    
+                    # پاک کردن محتوای قبلی
+                    pyautogui.hotkey('ctrl', 'a')
+                    time.sleep(0.2)
+                    
+                    # کپی پیام به کلیپ‌بورد
+                    pyperclip.copy(message)
+                    time.sleep(0.3)
+                    
+                    # پیست پیام
+                    pyautogui.hotkey('ctrl', 'v')
+                    time.sleep(0.8)
+                    
+                    # ارسال با Enter
+                    pyautogui.press('enter')
+                    time.sleep(1)
+                    
+                    return True
+                    
+                except Exception as e:
+                    self.log_message(f"⚠️ تلاش {x},{y} ناموفق: {e}")
+                    continue
+            
+            # روش نهایی: استفاده از Tab
+            try:
+                pyautogui.press('tab')
+                time.sleep(0.5)
+                
+                pyperclip.copy(message)
+                time.sleep(0.3)
+                pyautogui.hotkey('ctrl', 'v')
+                time.sleep(0.5)
+                pyautogui.press('enter')
+                time.sleep(1)
+                
+                return True
+                
+            except Exception as e:
+                self.log_message(f"❌ همه روش‌های جایگزین ناموفق: {e}")
+                return False
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در روش جایگزین ارسال: {e}")
+            return False
+
     def read_recent_messages(self):
-        """خواندن پیام‌های اخیر در چت فعلی"""
+        """خواندن پیام‌های اخیر در چت فعلی با بهبود تشخیص"""
+        # استفاده از تابع هوشمند جدید
+    def send_message_to_current_chat(self, message):
+        """ارسال پیام به چت فعلی با بهبود دقت"""
+        # استفاده از تابع هوشمند جدید
+        return self.smart_send_message(message)
+
+    def enhanced_chat_detection_and_response(self):
+        """تشخیص پیشرفته چت‌ها و پاسخ‌دهی هوشمند"""
+        self.log_message("🤖 شروع تشخیص پیشرفته چت‌ها و پاسخ‌دهی هوشمند...")
+        
+        try:
+            # تشخیص ساختار کامل پنجره تلگرام
+            if not self.ui_detector.detect_telegram_window():
+                self.log_message("⚠️ ساختار پنجره تلگرام تشخیص داده نشد، تنظیمات پیش‌فرض اعمال شد")
+            
+            # تشخیص چت‌های خوانده نشده (اولویت بالا)
+            unread_chats = self.ui_detector.detect_unread_chats()
+            if unread_chats:
+                self.log_message(f"📬 {len(unread_chats)} چت خوانده نشده تشخیص داده شد")
+                
+                for chat_pos in unread_chats[:5]:  # حداکثر 5 چت خوانده نشده
+                    if not self.is_running:
+                        break
+                    
+                    # کلیک دقیق روی چت خوانده نشده
+                    pyautogui.click(chat_pos[0], chat_pos[1])
+                    time.sleep(2)
+                    
+                    # دریافت نام چت
+                    chat_name = self.get_current_chat_name()
+                    self.log_message(f"📨 پردازش چت خوانده نشده: {chat_name}")
+                    
+                    # خواندن پیام‌ها با روش هوشمند
+                    messages = self.smart_read_recent_messages()
+                    
+                    if messages:
+                        # تولید پاسخ متناسب
+                        context = f"چت خوانده نشده: {chat_name}\nپیام‌های جدید:\n" + "\n".join(messages[-3:])
+                        reply = self.generate_contextual_reply(context)
+                        
+                        # ارسال پاسخ با تشخیص هوشمند
+                        if self.smart_send_message(reply):
+                            self.log_message(f"✅ پاسخ هوشمند ارسال شد: {reply[:50]}...")
+                        else:
+                            self.log_message(f"❌ خطا در ارسال پاسخ به {chat_name}")
+                    
+                    time.sleep(2)
+            
+            # تشخیص و پردازش چت‌های عادی
+            chat_positions = self.ui_detector.find_chat_items()
+            if chat_positions:
+                self.log_message(f"🎯 {len(chat_positions)} موقعیت چت تشخیص داده شد")
+                
+                for i, chat_pos in enumerate(chat_positions[:10]):  # حداکثر 10 چت
+                    if not self.is_running:
+                        break
+                    
+                    # کلیک دقیق روی چت
+                    pyautogui.click(chat_pos[0], chat_pos[1])
+                    time.sleep(1.5)
+                    
+                    # دریافت نام چت
+                    chat_name = self.get_current_chat_name()
+                    
+                    # بررسی وجود در لیست تعریف شده
+                    is_configured = any(
+                        chat_name in group["group_name"] or chat_name in pv["user_name"]
+                        for group in self.config.get("groups", [])
+                        for pv in self.config.get("private_chats", [])
+                    )
+                    
+                    if is_configured or chat_name == "نامشخص":
+                        continue  # رد کردن چت‌های تعریف شده یا نامشخص
+                    
+                    self.log_message(f"🔍 بررسی چت: {chat_name}")
+                    
+                    # خواندن پیام‌ها
+                    messages = self.smart_read_recent_messages()
+                    
+                    if messages:
+                        # بررسی نیاز به پاسخ (پیام‌های جدید یا سوال‌ها)
+                        needs_reply = self.analyze_need_for_reply(messages, chat_name)
+                        
+                        if needs_reply:
+                            # تولید پاسخ هوشمند
+                            context = f"چت: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(messages[-3:])
+                            reply = self.generate_contextual_reply(context)
+                            
+                            # ارسال پاسخ
+                            if self.smart_send_message(reply):
+                                self.log_message(f"✅ پاسخ هوشمند ارسال شد به {chat_name}")
+                            else:
+                                self.log_message(f"❌ خطا در ارسال پاسخ به {chat_name}")
+                    
+                    time.sleep(2)
+            
+            self.log_message("✅ تشخیص پیشرفته چت‌ها و پاسخ‌دهی تمام شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تشخیص پیشرفته چت‌ها: {e}")
+
+    def analyze_need_for_reply(self, messages, chat_name):
+        """تحلیل نیاز به پاسخ بر اساس محتوای پیام‌ها"""
+        try:
+            if not messages:
+                return False
+            
+            last_message = messages[-1].lower()
+            
+            # نشانه‌های نیاز به پاسخ
+            question_indicators = ['؟', '?', 'چی', 'چه', 'کی', 'کجا', 'چرا', 'چطور', 'آیا']
+            urgent_keywords = ['فوری', 'مهم', 'ضروری', 'سریع', 'urgent', 'important']
+            greeting_keywords = ['سلام', 'hi', 'hello', 'صبح بخیر', 'ظهر بخیر', 'عصر بخیر', 'شب بخیر']
+            
+            # بررسی وجود سوال
+            has_question = any(indicator in last_message for indicator in question_indicators)
+            
+            # بررسی کلمات فوری
+            is_urgent = any(keyword in last_message for keyword in urgent_keywords)
+            
+            # بررسی سلام و احوال‌پرسی
+            is_greeting = any(keyword in last_message for keyword in greeting_keywords)
+            
+            # بررسی طول پیام (پیام‌های کوتاه معمولاً نیاز به پاسخ دارند)
+            is_short_message = len(last_message.split()) <= 5
+            
+            # تصمیم‌گیری
+            if has_question or is_urgent or is_greeting or is_short_message:
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تحلیل نیاز به پاسخ: {e}")
+            return True  # در صورت خطا، فرض بر پاسخ‌دهی
+        """خواندن پیام‌های اخیر در چت فعلی با بهبود تشخیص"""
         messages = []
         try:
             # اسکرول به آخرین پیام‌ها
-            pyautogui.scroll(-5, x=500, y=400)
-            time.sleep(1)
+            pyautogui.scroll(-10, x=500, y=400)
+            time.sleep(1.5)
             
             # انتخاب ناحیه چت
             chat_area_x, chat_area_y = 500, 400
             pyautogui.click(chat_area_x, chat_area_y)
             time.sleep(0.5)
             
-            # روش‌های مختلف برای خواندن پیام‌ها
-            
             # روش 1: انتخاب همه و کپی
             pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.5)
+            time.sleep(0.8)
             pyautogui.hotkey('ctrl', 'c')
-            time.sleep(0.5)
+            time.sleep(0.8)
             
             all_text = pyperclip.paste()
             
-            # تجزیه متن به پیام‌های جداگانه
-            if all_text:
-                # تمیز کردن و تقسیم متن
-                lines = all_text.split('\n')
-                current_message = ""
+            if all_text and len(all_text) > 10:
+                # تمیز کردن متن و جدا کردن پیام‌ها
+                lines = all_text.strip().split('\n')
                 
+                current_message = ""
                 for line in lines:
                     line = line.strip()
-                    if line:
-                        # تشخیص شروع پیام جدید (معمولاً با زمان یا نام کاربر)
-                        if re.match(r'^\d{1,2}:\d{2}', line) or len(current_message) > 200:
+                    
+                    # فیلتر کردن خطوط غیرضروری
+                    if (line and 
+                        not line.isdigit() and 
+                        len(line) > 3 and
+                        not line.startswith('http') and
+                        not line.startswith('@') and
+                        not any(skip in line.lower() for skip in ['online', 'last seen', 'typing', 'در حال تایپ', 'آنلاین', 'آخرین بازدید'])):
+                        
+                        # تشخیص شروع پیام جدید (معمولاً با نام کاربر یا زمان)
+                        if (line.replace(':', '').replace(' ', '').isalnum() or 
+                            re.match(r'^\d{1,2}:\d{2}', line) or 
+                            any(time_pattern in line for time_pattern in ['AM', 'PM', 'ص', 'ع']) or
+                            len(line) < 20):
+                            
+                            # ذخیره پیام قبلی
                             if current_message:
                                 messages.append(current_message.strip())
                             current_message = line
                         else:
-                            current_message += " " + line
+                            # ادامه پیام فعلی
+                            if current_message:
+                                current_message += " " + line
+                            else:
+                                current_message = line
                 
-                # اضافه کردن آخرین پیام
+                # ذخیره آخرین پیام
                 if current_message:
                     messages.append(current_message.strip())
             
-            # فیلتر کردن پیام‌های خالی و کوتاه
+            # روش 2: اسکرول و خواندن متعدد (در صورت عدم موفقیت روش اول)
+            if not messages:
+                self.log_message("🔄 تلاش دوباره برای خواندن پیام‌ها...")
+                
+                # چندین اسکرول و کپی
+                for i in range(3):
+                    pyautogui.scroll(-5, x=500, y=400)
+                    time.sleep(0.5)
+                    
+                    # انتخاب ناحیه کوچکتر
+                    pyautogui.drag(300, 300, 700, 500, duration=0.5)
+                    time.sleep(0.3)
+                    
+                    pyautogui.hotkey('ctrl', 'c')
+                    time.sleep(0.5)
+                    
+                    text_chunk = pyperclip.paste()
+                    if text_chunk and len(text_chunk) > 5:
+                        messages.extend([line.strip() for line in text_chunk.split('\n') if line.strip() and len(line.strip()) > 5])
+            
+            # فیلتر نهایی پیام‌ها
             filtered_messages = []
             for msg in messages:
-                if len(msg) > 5 and not msg.isdigit():  # حذف پیام‌های خیلی کوتاه و اعداد
+                if (len(msg) > 10 and 
+                    not msg.isdigit() and 
+                    not msg.startswith('http') and
+                    any(char.isalpha() for char in msg)):  # باید حداقل یک حرف داشته باشد
                     filtered_messages.append(msg)
             
-            return filtered_messages[-5:] if filtered_messages else []  # 5 پیام آخر
+            # حذف تکراری‌ها
+            unique_messages = []
+            for msg in filtered_messages:
+                if msg not in unique_messages:
+                    unique_messages.append(msg)
+            
+            return unique_messages[-7:] if unique_messages else []  # 7 پیام آخر
             
         except Exception as e:
             self.log_message(f"❌ خطا در خواندن پیام‌ها: {e}")
@@ -393,30 +1118,80 @@ class TelegramAIMessenger:
             return "سلام! چطورید؟ 😊"
 
     def send_message_to_current_chat(self, message):
-        """ارسال پیام به چت فعلی"""
+        """ارسال پیام به چت فعلی با بهبود دقت"""
         try:
-            # پیدا کردن باکس تایپ پیام
-            message_box_x, message_box_y = 500, 650
-            pyautogui.click(message_box_x, message_box_y)
-            time.sleep(0.5)
+            # کلیک روی باکس تایپ پیام (متعدد موقعیت)
+            message_box_positions = [
+                (500, 650),  # موقعیت معمولی
+                (500, 680),  # موقعیت جایگزین 1
+                (400, 650),  # موقعیت جایگزین 2
+                (600, 650),  # موقعیت جایگزین 3
+            ]
             
-            # پاک کردن محتوای قبلی (در صورت وجود)
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.2)
+            message_sent = False
             
-            # کپی و ارسال پیام
-            pyperclip.copy(message)
-            time.sleep(0.3)
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(0.8)
-            pyautogui.press('enter')
-            time.sleep(0.5)
+            for x, y in message_box_positions:
+                try:
+                    # کلیک روی باکس پیام
+                    pyautogui.click(x, y)
+                    time.sleep(0.5)
+                    
+                    # پاک کردن محتوای قبلی
+                    pyautogui.hotkey('ctrl', 'a')
+                    time.sleep(0.2)
+                    
+                    # کپی پیام به کلیپ‌بورد
+                    pyperclip.copy(message)
+                    time.sleep(0.3)
+                    
+                    # پیست پیام
+                    pyautogui.hotkey('ctrl', 'v')
+                    time.sleep(0.8)
+                    
+                    # ارسال با Enter
+                    pyautogui.press('enter')
+                    time.sleep(1)
+                    
+                    message_sent = True
+                    break
+                    
+                except Exception as e:
+                    self.log_message(f"⚠️ تلاش {x},{y} ناموفق: {e}")
+                    continue
             
-            return True
+            if not message_sent:
+                # روش جایگزین: استفاده از کلیدهای ترکیبی
+                try:
+                    # فشار دادن Tab برای رفتن به باکس پیام
+                    pyautogui.press('tab')
+                    time.sleep(0.5)
+                    
+                    pyperclip.copy(message)
+                    time.sleep(0.3)
+                    pyautogui.hotkey('ctrl', 'v')
+                    time.sleep(0.5)
+                    pyautogui.press('enter')
+                    time.sleep(1)
+                    
+                    message_sent = True
+                    
+                except Exception as e:
+                    self.log_message(f"❌ روش جایگزین نیز ناموفق: {e}")
+            
+            return message_sent
             
         except Exception as e:
             self.log_message(f"❌ خطا در ارسال پیام: {e}")
             return False
+
+    def start_enhanced_detection(self):
+        """شروع تشخیص هوشمند چت‌ها و پاسخ‌دهی"""
+        if not self.is_running:
+            self.is_running = True
+            self.log_message("🤖 شروع تشخیص هوشمند چت‌ها...")
+            threading.Thread(target=self.enhanced_chat_detection_and_response, daemon=True).start()
+        else:
+            self.log_message("⚠️ عملیات قبلی هنوز در حال اجرا است")
 
     def start_read_and_reply(self):
         """شروع خواندن و پاسخ‌دهی خودکار به همه چت‌ها"""
@@ -545,6 +1320,7 @@ class TelegramAIMessenger:
         ttk.Button(control_frame, text="📱 باز کردن تلگرام", command=self.open_telegram).pack(side='left', padx=5)
         ttk.Button(control_frame, text="🤖 تست AI", command=self.test_ai).pack(side='left', padx=5)
         ttk.Button(control_frame, text="👁️ خواندن پیشرفته چت‌ها", command=self.start_read_and_reply).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="🤖 تشخیص هوشمند چت‌ها", command=self.start_enhanced_detection).pack(side='left', padx=5)
         ttk.Button(control_frame, text="🔄 تشخیص اکانت‌ها", command=self.refresh_accounts).pack(side='left', padx=5)
         
         # وضعیت
@@ -581,9 +1357,9 @@ class TelegramAIMessenger:
         
         self.chat_list = []
         for group in groups:
-            self.chat_list.append(f"📢 {group['group_name']}")
+            self.chat_list.append(f"📢 {group['group_name']} ({group['chat_id']})")
         for pv in private_chats:
-            self.chat_list.append(f"💬 {pv['user_name']}")
+            self.chat_list.append(f"💬 {pv['user_name']} ({pv['chat_id']})")
         
         # اگر هیچ گروه/چت تعریف نشده، از تنظیمات قدیمی استفاده کن
         if not self.chat_list and "group_name" in self.config:
@@ -837,19 +1613,36 @@ class TelegramAIMessenger:
             chat_id = ""
             chat_name = ""
             
-            # تشخیص نوع چت (گروه یا خصوصی)
+            # تشخیص نوع چت (گروه یا خصوصی) با پشتیبانی از فرمت جدید
             if selected_chat.startswith("📢 "):  # گروه
-                group_name = selected_chat[2:]  # حذف ایموجی
-                group_info = next((g for g in self.config.get("groups", []) if g["group_name"] == group_name), None)
+                # استخراج نام گروه و Chat ID از فرمت: "📢 نام گروه (chat_id)"
+                if "(" in selected_chat and ")" in selected_chat:
+                    group_name = selected_chat[2:selected_chat.rfind("(")].strip()
+                    chat_id = selected_chat[selected_chat.rfind("(") + 1:selected_chat.rfind(")")].strip()
+                else:
+                    group_name = selected_chat[2:]  # فرمت قدیمی
+                
+                # یافتن اطلاعات گروه
+                group_info = next((g for g in self.config.get("groups", []) 
+                                 if g["group_name"] == group_name or g["chat_id"] == chat_id), None)
                 if group_info:
-                    chat_id = group_info.get("chat_id", "")
-                    chat_name = group_info.get("group_name", "")
+                    chat_id = group_info.get("chat_id", chat_id)
+                    chat_name = group_info.get("group_name", group_name)
+                    
             elif selected_chat.startswith("💬 "):  # چت خصوصی
-                user_name = selected_chat[2:]  # حذف ایموجی
-                pv_info = next((p for p in self.config.get("private_chats", []) if p["user_name"] == user_name), None)
+                # استخراج نام کاربر و Chat ID از فرمت: "💬 نام کاربر (chat_id)"
+                if "(" in selected_chat and ")" in selected_chat:
+                    user_name = selected_chat[2:selected_chat.rfind("(")].strip()
+                    chat_id = selected_chat[selected_chat.rfind("(") + 1:selected_chat.rfind(")")].strip()
+                else:
+                    user_name = selected_chat[2:]  # فرمت قدیمی
+                
+                # یافتن اطلاعات چت خصوصی
+                pv_info = next((p for p in self.config.get("private_chats", []) 
+                              if p["user_name"] == user_name or p["chat_id"] == chat_id), None)
                 if pv_info:
-                    chat_id = pv_info.get("chat_id", "")
-                    chat_name = pv_info.get("user_name", "")
+                    chat_id = pv_info.get("chat_id", chat_id)
+                    chat_name = pv_info.get("user_name", user_name)
             else:
                 # fallback به روش قدیمی
                 if hasattr(self, 'chat_id_var') and hasattr(self, 'group_name_var'):
@@ -865,7 +1658,7 @@ class TelegramAIMessenger:
             
             # باز کردن جستجو
             pyautogui.hotkey('ctrl', 'k')
-            time.sleep(1)
+            time.sleep(1.5)
             
             # پاک کردن جستجوی قبلی
             pyautogui.hotkey('ctrl', 'a')
@@ -875,7 +1668,7 @@ class TelegramAIMessenger:
             search_term = chat_id if chat_id else chat_name
             pyperclip.copy(search_term)
             pyautogui.hotkey('ctrl', 'v')
-            time.sleep(2)
+            time.sleep(2.5)
             
             # انتخاب اولین نتیجه
             pyautogui.press('enter')
@@ -883,7 +1676,7 @@ class TelegramAIMessenger:
             
             # تشخیص نوع چت برای لاگ
             chat_type = "گروه" if selected_chat.startswith("📢") else "چت خصوصی"
-            self.log_message(f"✅ {chat_type} باز شد: {chat_name}")
+            self.log_message(f"✅ {chat_type} باز شد: {chat_name} ({chat_id})")
             return True
             
         except Exception as e:
