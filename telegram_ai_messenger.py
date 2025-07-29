@@ -25,6 +25,7 @@ import numpy as np
 from PIL import Image, ImageTk
 import io
 import pygetwindow as gw
+import glob
 
 class TelegramUIDetector:
     """کلاس هوشمند برای تشخیص عناصر رابط کاربری تلگرام"""
@@ -284,45 +285,290 @@ class TelegramAIMessenger:
         self.log_message("🐈 فقط چت‌های فولدر Littlejoy🐈 پردازش می‌شوند")
         
         try:
+            # اول تلگرام را باز کن
+            self.open_telegram_with_path(telegram_path)
+            time.sleep(3)
+            
             # پیدا کردن پنجره تلگرام
             windows = gw.getWindowsWithTitle('Telegram')
             target_window = None
             
-            # اگر چندین پنجره تلگرام باز است، سعی کن مناسب ترین را پیدا کن
             if windows:
-                target_window = windows[0]  # اولی را انتخاب کن
+                target_window = windows[0]
                 self.log_message(f"✅ پنجره تلگرام پیدا شد: {target_window.title}")
             else:
                 self.log_message("❌ هیچ پنجره تلگرامی پیدا نشد!")
-                # سعی کن تلگرام را باز کن
-                self.open_telegram()
-                time.sleep(3)
-                windows = gw.getWindowsWithTitle('Telegram')
-                if windows:
-                    target_window = windows[0]
-                else:
-                    return
+                return
             
-            # فعال‌سازی پنجره و تنظیم حالت تمام صفحه
+            # فعال‌سازی و تمام صفحه کردن پنجره
+            self.log_message("📺 در حال تمام صفحه کردن تلگرام...")
             target_window.activate()
-            time.sleep(1.5)
+            time.sleep(1)
             
-            # تمام صفحه کردن پنجره
-            try:
-                target_window.maximize()
-                self.log_message("📺 پنجره تلگرام در حالت تمام صفحه قرار گرفت")
-                time.sleep(1.5)
-            except:
-                # اگر maximize کار نکرد، سعی کن با کلید F11
-                target_window.activate()
-                pyautogui.press('f11')
-                self.log_message("📺 تلاش برای تمام صفحه با F11")
-                time.sleep(2)
-            
-            # اطمینان از اینکه پنجره کاملاً قابل مشاهده است
-            target_window.restore()
+            # اطمینان از تمام صفحه شدن
             target_window.maximize()
             time.sleep(1)
+            
+            # فشردن F11 برای تمام صفحه کامل
+            pyautogui.press('f11')
+            time.sleep(2)
+            self.log_message("📺 تلگرام در حالت تمام صفحه قرار گرفت")
+            
+            # دریافت ابعاد جدید صفحه
+            screen_width, screen_height = pyautogui.size()
+            self.log_message(f"📏 ابعاد صفحه: {screen_width}x{screen_height}")
+            
+            # گرفتن اسکرین‌شات کامل
+            screenshot = pyautogui.screenshot()
+            screenshot.save('telegram_fullscreen_screenshot.png')
+            self.log_message("✅ اسکرین‌شات تمام صفحه از تلگرام ذخیره شد!")
+            
+            # تنظیم detector برای ابعاد کامل صفحه
+            self.ui_detector.screen_width = screen_width
+            self.ui_detector.screen_height = screen_height
+            
+            # تشخیص ساختار پنجره تلگرام در حالت تمام صفحه
+            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            self.log_message("🔍 شروع تشخیص چت‌ها از اسکرین‌شات تمام صفحه...")
+            
+            # تنظیم نواحی برای حالت تمام صفحه
+            chat_list_width = int(screen_width * 0.25)  # 25% چپ برای لیست چت‌ها
+            message_area_width = int(screen_width * 0.75)  # 75% راست برای پیام‌ها
+            
+            self.ui_detector.chat_list_region = (0, 100, chat_list_width, screen_height - 150)
+            self.ui_detector.message_area_region = (chat_list_width, 100, message_area_width, screen_height - 150)
+            self.ui_detector.input_box_region = (chat_list_width, screen_height - 100, message_area_width - 80, 50)
+            self.ui_detector.send_button_region = (screen_width - 80, screen_height - 100, 80, 50)
+            
+            self.log_message(f"📋 نواحی تنظیم شد - چت‌ها: {chat_list_width}px، پیام‌ها: {message_area_width}px")
+            
+            # هدایت به فولدر Littlejoy
+            self.navigate_to_littlejoy_folder_improved()
+            time.sleep(3)
+            
+            # گرفتن اسکرین‌شات جدید بعد از هدایت
+            screenshot = pyautogui.screenshot()
+            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            
+            # تشخیص چت‌های Littlejoy
+            chat_positions = self.detect_littlejoy_chats_improved(img)
+            
+            if chat_positions:
+                self.log_message(f"🐈 {len(chat_positions)} چت Littlejoy تشخیص داده شد")
+                
+                # پردازش هر چت
+                for i, chat_pos in enumerate(chat_positions[:5]):  # حداکثر 5 چت
+                    if not self.is_running:
+                        break
+                    
+                    self.log_message(f"🔍 پردازش چت {i+1} در موقعیت {chat_pos}")
+                    
+                    # کلیک روی چت
+                    pyautogui.click(chat_pos[0], chat_pos[1])
+                    time.sleep(2)
+                    
+                    # خواندن و پاسخ‌دهی
+                    success = self.process_single_chat()
+                    
+                    if success:
+                        self.log_message(f"✅ چت {i+1} با موفقیت پردازش شد")
+                    else:
+                        self.log_message(f"⚠️ مشکل در پردازش چت {i+1}")
+                    
+                    time.sleep(2)
+            else:
+                self.log_message("❌ هیچ چت Littlejoy پیدا نشد!")
+            
+            self.log_message("✅ پردازش تمام صفحه Littlejoy🐈 تمام شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در اسکرین گرفتن: {e}")
+            import traceback
+            self.log_message(f"جزئیات خطا: {traceback.format_exc()}")
+    
+    def open_telegram_with_path(self, telegram_path):
+        """باز کردن تلگرام با مسیر مشخص"""
+        try:
+            if telegram_path and os.path.exists(telegram_path):
+                self.log_message(f"📱 باز کردن تلگرام از: {telegram_path}")
+                subprocess.Popen([telegram_path])
+                time.sleep(3)
+            else:
+                self.log_message("⚠️ مسیر تلگرام یافت نشد، از تلگرام باز سیستم استفاده می‌شود")
+                self.open_telegram()
+        except Exception as e:
+            self.log_message(f"❌ خطا در باز کردن تلگرام: {e}")
+            self.open_telegram()
+    
+    def navigate_to_littlejoy_folder_improved(self):
+        """هدایت بهبود یافته به فولدر Littlejoy🐈"""
+        try:
+            self.log_message("� در حال هدایت بهبود یافته به فولدر Littlejoy🐈...")
+            
+            # کلیک روی نوار جستجو (موقعیت تمام صفحه)
+            search_x = self.ui_detector.screen_width // 4
+            search_y = 60
+            
+            pyautogui.click(search_x, search_y)
+            time.sleep(1)
+            
+            # پاک کردن نوار جستجو
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.3)
+            pyautogui.press('delete')
+            time.sleep(0.5)
+            
+            # تایپ نام فولدر
+            search_terms = ["Littlejoy", "littlejoy", "🐈", "گربه"]
+            
+            for term in search_terms:
+                pyautogui.typewrite(term, interval=0.1)
+                time.sleep(1.5)
+                
+                # بررسی نتایج
+                pyautogui.press('enter')
+                time.sleep(2)
+                
+                # اگر نتیجه‌ای پیدا شد، خروج از حلقه
+                screenshot = pyautogui.screenshot()
+                if self.check_search_results(screenshot):
+                    self.log_message(f"✅ فولدر با کلیدواژه '{term}' پیدا شد")
+                    break
+                
+                # پاک کردن برای تلاش بعدی
+                pyautogui.click(search_x, search_y)
+                time.sleep(0.5)
+                pyautogui.hotkey('ctrl', 'a')
+                time.sleep(0.3)
+                pyautogui.press('delete')
+                time.sleep(0.5)
+            
+            self.log_message("✅ تلاش برای هدایت به فولدر Littlejoy تمام شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در هدایت بهبود یافته: {e}")
+    
+    def check_search_results(self, screenshot):
+        """بررسی وجود نتایج جستجو"""
+        try:
+            # تبدیل اسکرین‌شات به آرایه numpy
+            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # بررسی وجود محتوا در ناحیه نتایج جستجو
+            search_results_area = gray[150:400, 50:400]
+            
+            # اگر تنوع رنگی وجود داشت، احتمالاً نتایج جستجو هست
+            if np.std(search_results_area) > 20:
+                return True
+            
+            return False
+        except:
+            return False
+    
+    def detect_littlejoy_chats_improved(self, img):
+        """تشخیص بهبود یافته چت‌های Littlejoy"""
+        try:
+            chat_positions = []
+            
+            # تعیین ناحیه لیست چت‌ها
+            chat_list_x = 0
+            chat_list_y = 150
+            chat_list_width = int(self.ui_detector.screen_width * 0.25)
+            chat_list_height = self.ui_detector.screen_height - 300
+            
+            # استخراج ناحیه چت‌ها
+            chat_area = img[chat_list_y:chat_list_y + chat_list_height, 
+                           chat_list_x:chat_list_x + chat_list_width]
+            
+            # تبدیل به grayscale
+            gray = cv2.cvtColor(chat_area, cv2.COLOR_BGR2GRAY)
+            
+            # تشخیص نواحی با تغییرات نور (چت‌ها)
+            # Apply threshold to get binary image
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # Find contours
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # تحلیل contours برای یافتن چت‌ها
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                
+                # شرایط یک چت معتبر
+                if (w > 150 and  # عرض مناسب
+                    40 < h < 100 and  # ارتفاع مناسب
+                    cv2.contourArea(contour) > 1000):  # حداقل مساحت
+                    
+                    # محاسبه موقعیت مرکز چت
+                    center_x = chat_list_x + x + w // 2
+                    center_y = chat_list_y + y + h // 2
+                    
+                    chat_positions.append((center_x, center_y))
+            
+            # اگر با contour چیزی پیدا نشد، از روش شبکه‌ای استفاده کن
+            if not chat_positions:
+                self.log_message("🔄 استفاده از روش شبکه‌ای برای تشخیص چت‌ها...")
+                
+                chat_height = 70  # ارتفاع متوسط هر چت
+                chat_start_y = 180  # شروع لیست چت‌ها
+                max_chats = min(10, (chat_list_height - 50) // chat_height)
+                
+                for i in range(max_chats):
+                    center_x = chat_list_width // 2  # وسط لیست چت‌ها
+                    center_y = chat_start_y + (i * chat_height)
+                    
+                    # بررسی اینکه در محدوده مجاز است
+                    if center_y < self.ui_detector.screen_height - 200:
+                        chat_positions.append((center_x, center_y))
+            
+            self.log_message(f"🎯 {len(chat_positions)} موقعیت چت تشخیص داده شد")
+            return chat_positions
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تشخیص چت‌های Littlejoy: {e}")
+            return []
+    
+    def process_single_chat(self):
+        """پردازش یک چت منفرد"""
+        try:
+            # دریافت نام چت
+            chat_name = self.get_current_chat_name_improved()
+            
+            if chat_name == "نامشخص":
+                return False
+            
+            self.log_message(f"💬 پردازش چت: {chat_name}")
+            
+            # بررسی فیلتر Littlejoy
+            if not self.filter_chats_for_littlejoy(chat_name):
+                self.log_message(f"⏭️ چت {chat_name} در فولدر Littlejoy نیست")
+                return False
+            
+            # خواندن پیام‌ها
+            messages = self.read_messages_improved()
+            
+            if not messages:
+                self.log_message("⚠️ پیامی یافت نشد")
+                return False
+            
+            self.log_message(f"📖 {len(messages)} پیام خوانده شد")
+            
+            # تولید پاسخ مخصوص Littlejoy
+            context = f"چت Littlejoy: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(messages[-3:])
+            reply = self.generate_littlejoy_reply(context)
+            
+            # ارسال پاسخ
+            if self.send_message_improved(reply):
+                self.log_message(f"✅ پاسخ ارسال شد: {reply[:50]}...")
+                return True
+            else:
+                self.log_message("❌ خطا در ارسال پاسخ")
+                return False
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در پردازش چت: {e}")
+            return False
             
             left, top, width, height = target_window.left, target_window.top, target_window.width, target_window.height
             self.log_message(f"📏 ابعاد پنجره: {width}x{height} در موقعیت ({left}, {top})")
@@ -590,20 +836,153 @@ class TelegramAIMessenger:
         except Exception as e:
             self.log_message(f"❌ خطا در هدایت به فولدر Littlejoy: {e}")
     
-    def filter_chats_for_littlejoy(self, chat_name):
-        """فیلتر کردن چت‌ها برای فولدر Littlejoy🐈"""
-        # کلیدواژه‌هایی که نشان می‌دهد چت در فولدر Littlejoy است
-        littlejoy_indicators = [
-            "littlejoy", "little joy", "🐈", "گربه", "cat", "کت",
-            "joy", "جوی", "بچه گربه", "kitten"
-        ]
-        
-        chat_name_lower = chat_name.lower()
-        for indicator in littlejoy_indicators:
-            if indicator.lower() in chat_name_lower:
-                return True
-        
-        return False
+    def get_current_chat_name_improved(self):
+        """دریافت بهبود یافته نام چت فعلی"""
+        try:
+            # موقعیت نام چت در تمام صفحه
+            chat_name_x = self.ui_detector.screen_width // 2
+            chat_name_y = 60
+            
+            # کلیک روی ناحیه نام چت
+            pyautogui.click(chat_name_x, chat_name_y)
+            time.sleep(0.5)
+            
+            # انتخاب نام با triple click
+            pyautogui.click(chat_name_x, chat_name_y, clicks=3)
+            time.sleep(0.3)
+            
+            # کپی نام
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(0.5)
+            
+            chat_name = pyperclip.paste().strip()
+            
+            # تمیز کردن نام چت
+            chat_name = re.sub(r'[^\w\s🐈🐱😺😸😹😻🐾]', '', chat_name)
+            
+            return chat_name if chat_name else "نامشخص"
+        except:
+            return "نامشخص"
+    
+    def read_messages_improved(self):
+        """خواندن بهبود یافته پیام‌ها"""
+        try:
+            messages = []
+            
+            # موقعیت ناحیه پیام‌ها در تمام صفحه
+            message_area_x = int(self.ui_detector.screen_width * 0.25)
+            message_area_y = 150
+            message_area_width = int(self.ui_detector.screen_width * 0.75)
+            message_area_height = self.ui_detector.screen_height - 250
+            
+            # کلیک در وسط ناحیه پیام‌ها
+            center_x = message_area_x + message_area_width // 2
+            center_y = message_area_y + message_area_height // 2
+            
+            pyautogui.click(center_x, center_y)
+            time.sleep(0.5)
+            
+            # اسکرول به آخرین پیام‌ها
+            for _ in range(5):
+                pyautogui.scroll(-3, x=center_x, y=center_y)
+                time.sleep(0.2)
+            
+            time.sleep(1)
+            
+            # انتخاب همه محتوا
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(1)
+            
+            # کپی محتوا
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(1)
+            
+            # دریافت متن
+            all_text = pyperclip.paste()
+            
+            if all_text and len(all_text) > 10:
+                # تمیز کردن و جدا کردن پیام‌ها
+                lines = all_text.strip().split('\n')
+                
+                # فیلتر خطوط معتبر
+                valid_lines = []
+                for line in lines:
+                    line = line.strip()
+                    if (line and 
+                        len(line) > 2 and 
+                        not line.isdigit() and 
+                        not line.startswith('http') and
+                        not any(skip in line.lower() for skip in 
+                               ['online', 'last seen', 'typing', 'در حال تایپ', 'آنلاین'])):
+                        valid_lines.append(line)
+                
+                # گروه‌بندی پیام‌ها
+                current_message = ""
+                for line in valid_lines:
+                    # اگر خط کوتاه است، احتمالاً نام کاربر یا زمان است
+                    if len(line) < 30 and (any(char.isdigit() for char in line) or ':' in line):
+                        if current_message:
+                            messages.append(current_message.strip())
+                        current_message = ""
+                    else:
+                        if current_message:
+                            current_message += " " + line
+                        else:
+                            current_message = line
+                
+                # آخرین پیام
+                if current_message:
+                    messages.append(current_message.strip())
+            
+            # فیلتر نهایی
+            filtered_messages = []
+            for msg in messages:
+                if (len(msg) > 5 and 
+                    any(char.isalpha() for char in msg) and
+                    not msg.lower().startswith('telegram')):
+                    filtered_messages.append(msg)
+            
+            return filtered_messages[-5:] if filtered_messages else []  # 5 پیام آخر
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در خواندن پیام‌ها: {e}")
+            return []
+    
+    def send_message_improved(self, message):
+        """ارسال بهبود یافته پیام"""
+        try:
+            # موقعیت باکس پیام در تمام صفحه
+            input_x = int(self.ui_detector.screen_width * 0.25) + 50
+            input_y = self.ui_detector.screen_height - 100
+            input_width = int(self.ui_detector.screen_width * 0.65)
+            
+            # کلیک روی باکس پیام
+            pyautogui.click(input_x + input_width // 2, input_y)
+            time.sleep(0.5)
+            
+            # پاک کردن محتوای قبلی
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.2)
+            pyautogui.press('delete')
+            time.sleep(0.3)
+            
+            # کپی پیام به کلیپ‌بورد
+            pyperclip.copy(message)
+            time.sleep(0.3)
+            
+            # پیست پیام
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(1)
+            
+            # ارسال با Enter
+            pyautogui.press('enter')
+            time.sleep(1)
+            
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال پیام: {e}")
+            return False
 
     def start_screenshot_and_reply(self):
         """شروع اسکرین گرفتن و پاسخ‌دهی"""
@@ -1546,9 +1925,21 @@ class TelegramAIMessenger:
                 
         except Exception as e:
             self.log_message(f"خطا در تولید پاسخ AI برای Littlejoy: {e}")
-            return "🐈 سلام! Littlejoy چطوره؟ 😺"
-
-    def send_message_to_current_chat(self, message):
+    def filter_chats_for_littlejoy(self, chat_name):
+        """فیلتر کردن چت‌ها برای فولدر Littlejoy🐈"""
+        # کلیدواژه‌هایی که نشان می‌دهد چت در فولدر Littlejoy است
+        littlejoy_indicators = [
+            "littlejoy", "little joy", "🐈", "گربه", "cat", "کت",
+            "joy", "جوی", "بچه گربه", "kitten", "meow", "نیو"
+        ]
+        
+        chat_name_lower = chat_name.lower()
+        for indicator in littlejoy_indicators:
+            if indicator.lower() in chat_name_lower:
+                return True
+        
+        # اگر نام شامل کلیدواژه نبود، همه چت‌ها را قبول کن (چون در فولدر Littlejoy هستیم)
+        return True
         """ارسال پیام به چت فعلی با بهبود دقت"""
         try:
             # کلیک روی باکس تایپ پیام (متعدد موقعیت)
