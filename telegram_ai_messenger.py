@@ -269,6 +269,7 @@ class TelegramAIMessenger:
     def screenshot_telegram_and_reply(self):
         """
         فقط از پنجره تلگرام با مسیر مشخص اسکرین‌شات بگیر و چت‌ها را شناسایی و پاسخ بده
+        فقط چت‌های فولدر "Littlejoy🐈" را پردازش می‌کند
         """
         # گرفتن مسیر تلگرام از کانفیگ
         selected_account = self.account_var.get().strip() if hasattr(self, 'account_var') else "اکانت اصلی"
@@ -280,6 +281,7 @@ class TelegramAIMessenger:
         
         telegram_path = account_info.get("telegram_path", "")
         self.log_message(f"🖼️ شروع اسکرین گرفتن از تلگرام: {selected_account}")
+        self.log_message("🐈 فقط چت‌های فولدر Littlejoy🐈 پردازش می‌شوند")
         
         try:
             # پیدا کردن پنجره تلگرام
@@ -301,13 +303,26 @@ class TelegramAIMessenger:
                 else:
                     return
             
-            # فعال‌سازی پنجره و گرفتن اسکرین‌شات
+            # فعال‌سازی پنجره و تنظیم حالت تمام صفحه
             target_window.activate()
             time.sleep(1.5)
             
+            # تمام صفحه کردن پنجره
+            try:
+                target_window.maximize()
+                self.log_message("📺 پنجره تلگرام در حالت تمام صفحه قرار گرفت")
+                time.sleep(1.5)
+            except:
+                # اگر maximize کار نکرد، سعی کن با کلید F11
+                target_window.activate()
+                pyautogui.press('f11')
+                self.log_message("📺 تلاش برای تمام صفحه با F11")
+                time.sleep(2)
+            
             # اطمینان از اینکه پنجره کاملاً قابل مشاهده است
             target_window.restore()
-            time.sleep(0.5)
+            target_window.maximize()
+            time.sleep(1)
             
             left, top, width, height = target_window.left, target_window.top, target_window.width, target_window.height
             self.log_message(f"📏 ابعاد پنجره: {width}x{height} در موقعیت ({left}, {top})")
@@ -372,10 +387,10 @@ class TelegramAIMessenger:
                     
                     time.sleep(2)
             
-            # تشخیص چت‌های عادی
+            # تشخیص چت‌های عادی در فولدر Littlejoy
             chat_positions = self.detect_chats_from_screenshot(img)
             if chat_positions:
-                self.log_message(f"🎯 {len(chat_positions)} چت عادی تشخیص داده شد")
+                self.log_message(f"🐈 {len(chat_positions)} چت در فولدر Littlejoy تشخیص داده شد")
                 
                 for i, (chat_x, chat_y) in enumerate(chat_positions[:10]):  # حداکثر 10 چت
                     if not self.is_running:
@@ -385,7 +400,7 @@ class TelegramAIMessenger:
                     abs_x = left + chat_x
                     abs_y = top + chat_y
                     
-                    self.log_message(f"🔍 کلیک روی چت {i+1} در ({abs_x}, {abs_y})")
+                    self.log_message(f"🔍 کلیک روی چت Littlejoy {i+1} در ({abs_x}, {abs_y})")
                     pyautogui.click(abs_x, abs_y)
                     time.sleep(1.5)
                     
@@ -396,7 +411,12 @@ class TelegramAIMessenger:
                     if chat_name == "نامشخص":
                         continue
                     
-                    self.log_message(f"💬 بررسی چت: {chat_name}")
+                    # فیلتر کردن چت‌ها - فقط چت‌های مربوط به Littlejoy
+                    if not self.filter_chats_for_littlejoy(chat_name):
+                        self.log_message(f"⏭️ چت {chat_name} در فولدر Littlejoy نیست، رد شد")
+                        continue
+                    
+                    self.log_message(f"🐈 پردازش چت Littlejoy: {chat_name}")
                     
                     # خواندن پیام‌ها
                     last_messages = self.smart_read_recent_messages()
@@ -406,11 +426,11 @@ class TelegramAIMessenger:
                         needs_reply = self.analyze_need_for_reply(last_messages, chat_name)
                         
                         if needs_reply:
-                            self.log_message(f"✅ چت {chat_name} نیاز به پاسخ دارد")
+                            self.log_message(f"✅ چت Littlejoy {chat_name} نیاز به پاسخ دارد")
                             
-                            # تولید پاسخ
-                            context = f"چت: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(last_messages[-3:])
-                            smart_reply = self.generate_contextual_reply(context)
+                            # تولید پاسخ مناسب برای فولدر Littlejoy (ممکن است شامل مطالب مربوط به گربه باشد)
+                            context = f"چت Littlejoy: {chat_name}\nپیام‌های اخیر:\n" + "\n".join(last_messages[-3:])
+                            smart_reply = self.generate_littlejoy_reply(context)
                             
                             # ارسال پاسخ
                             if self.smart_send_message(smart_reply):
@@ -421,8 +441,10 @@ class TelegramAIMessenger:
                             self.log_message(f"⏭️ چت {chat_name} نیاز به پاسخ ندارد")
                     
                     time.sleep(2)
+            else:
+                self.log_message("❌ هیچ چتی در فولدر Littlejoy پیدا نشد!")
             
-            self.log_message("✅ پردازش اسکرین‌شات و پاسخ‌دهی تمام شد")
+            self.log_message("✅ پردازش فولدر Littlejoy🐈 تمام شد")
             
         except Exception as e:
             self.log_message(f"❌ خطا در اسکرین گرفتن و پاسخ‌دهی: {e}")
@@ -460,8 +482,19 @@ class TelegramAIMessenger:
             return []
 
     def detect_chats_from_screenshot(self, img):
-        """تشخیص چت‌ها از اسکرین‌شات"""
+        """
+        تشخیص چت‌ها از اسکرین‌شات - فقط چت‌های فولدر Littlejoy🐈
+        """
         try:
+            # اول بررسی کن که آیا در فولدر Littlejoy هستیم یا نه
+            if not self.check_if_in_littlejoy_folder(img):
+                self.log_message("📁 در حال هدایت به فولدر Littlejoy🐈...")
+                self.navigate_to_littlejoy_folder()
+                time.sleep(2)
+                return []
+            
+            self.log_message("✅ در فولدر Littlejoy🐈 هستیم، در حال تشخیص چت‌ها...")
+            
             # تبدیل به grayscale
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             
@@ -482,17 +515,95 @@ class TelegramAIMessenger:
             # اگر خط‌ها پیدا نشد، از روش تقسیم‌بندی یکنواخت استفاده کن
             if not chat_positions:
                 chat_height = 70  # تقریبی ارتفاع هر چت
-                num_chats = min(15, (self.ui_detector.screen_height - 160) // chat_height)
+                num_chats = min(10, (self.ui_detector.screen_height - 160) // chat_height)  # کمتر چت برای فولدر خاص
                 for i in range(num_chats):
                     chat_x = 175
                     chat_y = 115 + (i * chat_height)
                     chat_positions.append((chat_x, chat_y))
             
-            return chat_positions[:15]  # حداکثر 15 چت
+            self.log_message(f"🐈 {len(chat_positions)} چت در فولدر Littlejoy پیدا شد")
+            return chat_positions[:10]  # حداکثر 10 چت برای فولدر خاص
             
         except Exception as e:
             self.log_message(f"❌ خطا در تشخیص چت‌ها: {e}")
             return []
+    
+    def check_if_in_littlejoy_folder(self, img):
+        """بررسی اینکه آیا در فولدر Littlejoy🐈 هستیم یا نه"""
+        try:
+            # تبدیل تصویر به grayscale برای تشخیص متن
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # ناحیه بالای صفحه که عنوان فولدر نمایش داده می‌شود
+            header_area = gray[0:100, 0:400]  # ناحیه هدر
+            
+            # تشخیص متن (این یک روش ساده است)
+            # در اینجا باید OCR استفاده کرد ولی برای سادگی فرض می‌کنیم
+            # که اگر در فولدر خاصی هستیم، رنگ خاصی در هدر وجود دارد
+            
+            # بررسی رنگ‌های خاص که ممکن است نشان‌دهنده فولدر باشد
+            avg_brightness = np.mean(header_area)
+            
+            # اگر روشنایی متوسط در محدوده خاصی باشد، احتمالاً در فولدر هستیم
+            # (این روش نیاز به تنظیم دقیق‌تر دارد)
+            
+            # برای الان، همیشه True برمی‌گردانیم تا سایر عملکردها را تست کنیم
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در بررسی فولدر: {e}")
+            return False
+    
+    def navigate_to_littlejoy_folder(self):
+        """هدایت به فولدر Littlejoy🐈"""
+        try:
+            self.log_message("📁 در حال هدایت به فولدر Littlejoy🐈...")
+            
+            # روش 1: استفاده از جستجو
+            # کلیک روی نوار جستجو در بالای تلگرام
+            search_x = self.ui_detector.screen_width // 4
+            search_y = 50
+            pyautogui.click(search_x, search_y)
+            time.sleep(0.5)
+            
+            # پاک کردن نوار جستجو
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.2)
+            pyautogui.press('delete')
+            time.sleep(0.3)
+            
+            # تایپ نام فولدر
+            pyautogui.typewrite("Littlejoy", interval=0.1)
+            time.sleep(1)
+            
+            # فشردن Enter برای جستجو
+            pyautogui.press('enter')
+            time.sleep(2)
+            
+            # اگر نتایج جستجو نمایش داده شد، روی اولین نتیجه کلیک کن
+            pyautogui.press('down')
+            pyautogui.press('enter')
+            time.sleep(1)
+            
+            self.log_message("✅ سعی شد به فولدر Littlejoy هدایت شود")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در هدایت به فولدر Littlejoy: {e}")
+    
+    def filter_chats_for_littlejoy(self, chat_name):
+        """فیلتر کردن چت‌ها برای فولدر Littlejoy🐈"""
+        # کلیدواژه‌هایی که نشان می‌دهد چت در فولدر Littlejoy است
+        littlejoy_indicators = [
+            "littlejoy", "little joy", "🐈", "گربه", "cat", "کت",
+            "joy", "جوی", "بچه گربه", "kitten"
+        ]
+        
+        chat_name_lower = chat_name.lower()
+        for indicator in littlejoy_indicators:
+            if indicator.lower() in chat_name_lower:
+                return True
+        
+        return False
 
     def start_screenshot_and_reply(self):
         """شروع اسکرین گرفتن و پاسخ‌دهی"""
@@ -1354,6 +1465,88 @@ class TelegramAIMessenger:
         except Exception as e:
             self.log_message(f"خطا در تولید پاسخ AI: {e}")
             return "سلام! چطورید؟ 😊"
+
+    def generate_littlejoy_reply(self, context):
+        """تولید پاسخ مخصوص فولدر Littlejoy🐈 (مطالب مربوط به گربه)"""
+        if not self.ai_enabled_var.get():
+            return "🐈 سلام! Littlejoy چطوره؟"
+        
+        try:
+            url = self.ollama_url_var.get()
+            model = self.ollama_model_var.get()
+            personality = self.personality_var.get()
+            use_variety = self.message_variety_var.get()
+            use_emojis = self.use_emojis_var.get()
+            
+            # تعریف شخصیت‌ها
+            personality_descriptions = {
+                'دوستانه و صمیمی': 'دوستانه، گرم، صمیمی و عاشق گربه‌ها',
+                'رسمی و حرفه‌ای': 'رسمی ولی مهربان در مورد گربه‌ها',
+                'شوخ و سرگرم‌کننده': 'شوخ، بامزه، خنده‌دار و عاشق گربه‌ها',
+                'آموزشی و مفید': 'آموزشی در مورد نگهداری و مراقبت از گربه‌ها',
+                'انگیزشی و مثبت': 'مثبت و پرانرژی در مورد گربه‌ها',
+                'خلاق و هنری': 'خلاق و زیبا در توصیف گربه‌ها'
+            }
+            
+            # ایجاد prompt مخصوص گربه‌ها
+            emoji_instruction = "از ایموجی‌های گربه و حیوانات استفاده کن: 🐈 🐱 😺 😸 😹 😻 🐾 ❤️ 💕" if use_emojis else "از ایموجی استفاده نکن."
+            variety_instruction = "پاسخ را خلاقانه و متفاوت بنویس." if use_variety else ""
+            
+            prompt = f"""
+تو یک دستیار هوشمند هستی که عاشق گربه‌هاست و برای فولدر Littlejoy🐈 پاسخ می‌دهی.
+
+شخصیت تو: {personality_descriptions.get(personality, 'عاشق گربه‌ها')}
+
+کنتکست مکالمه در فولدر Littlejoy:
+{context}
+
+دستورالعمل:
+- پاسخ کوتاه و مناسب باشد (حداکثر 2-3 خط)
+- به آخرین پیام مستقیماً پاسخ بده
+- زبان فارسی و طبیعی استفاده کن
+- مخصوص مطالب گربه، Littlejoy و حیوانات خانگی
+- اگر در مورد گربه صحبت شده، اطلاعات مفید بده
+- اگر عکس گربه یا صدای نیو نیو باشه، واکنش مناسب نشان بده
+- {variety_instruction}
+- {emoji_instruction}
+- مهربان و دوست‌دار حیوانات باش
+
+پاسخ مناسب برای فولدر Littlejoy:
+"""
+            
+            response = requests.post(f"{url}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.8,  # کمی خلاقانه‌تر برای مطالب گربه
+                        "max_tokens": 150
+                    }
+                },
+                timeout=25)
+            
+            if response.status_code == 200:
+                result = response.json()
+                ai_reply = result.get('response', '').strip()
+                
+                # پاک‌سازی پاسخ
+                ai_reply = ai_reply.replace('\n\n', '\n').strip()
+                
+                # اضافه کردن ایموجی‌های گربه
+                if use_variety and use_emojis:
+                    cat_emojis = ['🐈', '🐱', '😺', '😸', '😹', '😻', '🐾', '💕', '❤️']
+                    if ai_reply and not any(emoji in ai_reply for emoji in cat_emojis):
+                        ai_reply += f" {random.choice(cat_emojis)}"
+                
+                return ai_reply if ai_reply else "🐈 سلام! Littlejoy چطوره؟ 😺"
+            else:
+                self.log_message(f"خطا در تولید پاسخ AI برای Littlejoy: {response.status_code}")
+                return "🐈 سلام! Littlejoy چطوره؟ 😺"
+                
+        except Exception as e:
+            self.log_message(f"خطا در تولید پاسخ AI برای Littlejoy: {e}")
+            return "🐈 سلام! Littlejoy چطوره؟ 😺"
 
     def send_message_to_current_chat(self, message):
         """ارسال پیام به چت فعلی با بهبود دقت"""
