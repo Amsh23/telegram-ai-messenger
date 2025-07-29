@@ -1,17 +1,35 @@
-# 🤖 Telegram AI Auto Messenger
+# 🤖 Telegram AI Auto Messenger - Advanced Edition v2.0
 
 <div align="center">
 
-![Python](https://img.shields.io/badge/Python-3.7+-blue?style=for-the-badge&logo=python)
+![Python](https://img.shields.io/badge/Python-3.8+-blue?style=for-the-badge&logo=python)
 ![Telegram](https://img.shields.io/badge/Telegram-Bot-blue?style=for-the-badge&logo=telegram)
 ![Ollama](https://img.shields.io/badge/Ollama-AI-green?style=for-the-badge&logo=ai)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
 
-**یک مسنجر خودکار هوشمند برای تلگرام با قدرت هوش مصنوعی Ollama**
+**نسخه پیشرفته مسنجر هوشمند تلگرام با قابلیت‌های جدید**
 
 </div>
 
-## 🌟 ویژگی‌ها
+## 🆕 ویژگی‌های جدید نسخه 2.0
+
+### 👥 **مدیریت چند اکانت**
+- استفاده همزمان از چندین اکانت تلگرام
+- انتخاب آسان اکانت از رابط کاربری
+- ذخیره مسیر جداگانه برای هر اکانت
+
+### 🏢 **مدیریت چند گروه**
+- کار با چندین گروه و کانال همزمان
+- انتخاب گروه از لیست کشویی
+- ذخیره Chat ID و نام برای هر گروه
+
+### 👁️ **خواندن و پاسخ خودکار به همه چت‌ها**
+- اسکن خودکار همه چت‌های فعال
+- خواندن آخرین پیام هر مکالمه
+- تولید پاسخ هوشمند با AI برای هر کاربر
+- پردازش همزمان چندین چت
+
+## 🌟 ویژگی‌های کلی
 
 ### 🧠 **هوش مصنوعی پیشرفته**
 - تولید خودکار پیام‌های خلاقانه و متنوع

@@ -1,0 +1,44 @@
+{
+  "telegram_accounts": [
+    {
+      "username": "اکانت اصلی",
+      "telegram_path": "C:\\Program Files\\WindowsApps\\TelegramMessengerLLP.TelegramDesktop_5.16.5.0_x64__t4vj0pshhgkwm\\Telegram.exe"
+    },
+    {
+      "username": "اکانت دوم", 
+      "telegram_path": "C:\\Users\\User\\AppData\\Roaming\\Telegram Desktop\\Telegram.exe"
+    },
+    {
+      "username": "اکانت کاری",
+      "telegram_path": "D:\\Apps\\Telegram\\Telegram.exe"
+    }
+  ],
+  "groups": [
+    {
+      "group_name": "گروه تست",
+      "chat_id": "-4973474959"
+    },
+    {
+      "group_name": "کانال خبری",
+      "chat_id": "-1001234567890"
+    },
+    {
+      "group_name": "گروه دوستان", 
+      "chat_id": "-1009876543210"
+    },
+    {
+      "group_name": "گروه کاری",
+      "chat_id": "-1001111222333"
+    }
+  ],
+  "base_message": "سلام! این یک پیام هوشمند است 🤖",
+  "interval_seconds": 30.0,
+  "ollama_url": "http://127.0.0.1:11434",
+  "ollama_model": "llama3.1:8b",
+  "ai_enabled": true,
+  "personality": "دوستانه و صمیمی",
+  "message_variety": true,
+  "use_emojis": true,
+  "selected_account": "اکانت اصلی",
+  "selected_group": "گروه تست"
+}

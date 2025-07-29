@@ -31,15 +31,88 @@ class TelegramAIMessenger:
         
         self.setup_gui()
     
+    def read_and_reply_all_chats(self):
+        """
+        خواندن همه چت‌ها و پاسخ خودکار به پیام‌های جدید هر کاربر
+        این تابع همه چت‌ها را اسکرول و پیام آخر هر کاربر را خوانده و با هوش مصنوعی پاسخ می‌دهد.
+        توجه: این قابلیت نیازمند فعال بودن تلگرام و چیدمان استاندارد است.
+        """
+        self.log_message("🚦 شروع خواندن و پاسخ‌دهی خودکار به همه چت‌ها...")
+        try:
+            # فرض: لیست چت‌ها در سمت چپ تلگرام باز است
+            for i in range(10):  # تعداد چت‌ها (برای تست)
+                if not self.is_running:
+                    break
+                    
+                # موقعیت تقریبی هر چت در لیست
+                x = 200
+                y = 150 + i * 60
+                pyautogui.click(x, y)
+                time.sleep(1.5)
+                
+                # تلاش برای خواندن آخرین پیام
+                try:
+                    # کلیک روی ناحیه چت برای انتخاب
+                    pyautogui.click(x + 400, y + 100)
+                    time.sleep(0.5)
+                    
+                    # انتخاب همه متن و کپی (روش جایگزین)
+                    pyautogui.hotkey('ctrl', 'a')
+                    time.sleep(0.3)
+                    pyautogui.hotkey('ctrl', 'c')
+                    time.sleep(0.5)
+                    
+                    last_message = pyperclip.paste()
+                    if last_message and len(last_message.strip()) > 0:
+                        self.log_message(f"📨 پیام دریافت شده: {last_message[:50]}...")
+                        
+                        # تولید پاسخ هوشمند
+                        reply = self.generate_ai_message("", f"پاسخ به: {last_message}")
+                        
+                        # ارسال پاسخ
+                        if self.send_message(reply):
+                            self.log_message(f"✅ پاسخ ارسال شد: {reply[:50]}...")
+                        else:
+                            self.log_message("❌ خطا در ارسال پاسخ")
+                    else:
+                        self.log_message(f"⚠️ چت {i+1}: پیامی یافت نشد")
+                        
+                except Exception as e:
+                    self.log_message(f"❌ خطا در پردازش چت {i+1}: {e}")
+                
+                time.sleep(2)  # انتظار بین چت‌ها
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در خواندن چت‌ها: {e}")
+        
+        self.log_message("✅ خواندن و پاسخ‌دهی به همه چت‌ها تمام شد.")
+
+    def start_read_and_reply(self):
+        """شروع خواندن و پاسخ‌دهی خودکار به همه چت‌ها"""
+        if not self.is_running:
+            self.is_running = True
+            self.log_message("🚀 شروع خواندن و پاسخ‌دهی خودکار...")
+            threading.Thread(target=self.read_and_reply_all_chats, daemon=True).start()
+        else:
+            self.log_message("⚠️ عملیات قبلی هنوز در حال اجرا است")
+
     def load_config(self):
         """بارگذاری تنظیمات از فایل کانفیگ"""
         default_config = {
-            "telegram_path": "C:\\Program Files\\WindowsApps\\TelegramMessengerLLP.TelegramDesktop_5.16.5.0_x64__t4vj0pshhgkwm\\Telegram.exe",
-            "group_name": "getharemmeow",
-            "chat_id": "-4973474959",
+            "telegram_accounts": [
+                {
+                    "username": "account1",
+                    "telegram_path": "C:\\Program Files\\WindowsApps\\TelegramMessengerLLP.TelegramDesktop_5.16.5.0_x64__t4vj0pshhgkwm\\Telegram.exe"
+                }
+            ],
+            "groups": [
+                {
+                    "group_name": "getharemmeow",
+                    "chat_id": "-4973474959"
+                }
+            ],
             "base_message": "سلام! این یک پیام هوشمند است",
             "interval_seconds": 30.0,
-            "account_number": 1,
             "ollama_url": "http://127.0.0.1:11500",
             "ollama_model": "llama3.1:8b",
             "ai_enabled": True,
@@ -50,8 +123,7 @@ class TelegramAIMessenger:
         
         try:
             if os.path.exists(self.config_file):
-                with open(self.config_file, 'r', encoding='utf-8') as 
-                f:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
                     self.config = json.load(f)
                 # اضافه کردن کلیدهای جدید در صورت عدم وجود
                 for key, value in default_config.items():
@@ -110,6 +182,7 @@ class TelegramAIMessenger:
         ttk.Button(control_frame, text="💾 ذخیره تنظیمات", command=self.save_settings).pack(side='left', padx=5)
         ttk.Button(control_frame, text="📱 باز کردن تلگرام", command=self.open_telegram).pack(side='left', padx=5)
         ttk.Button(control_frame, text="🤖 تست AI", command=self.test_ai).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="👁️ خواندن و پاسخ به همه چت‌ها", command=self.start_read_and_reply).pack(side='left', padx=5)
         
         # وضعیت
         self.status_label = tk.Label(self.root, text="آماده", bg='#2c3e50', fg='#2ecc71', font=('Arial', 10, 'bold'))
@@ -129,33 +202,34 @@ class TelegramAIMessenger:
     
     def setup_main_tab(self, parent):
         """تنظیم تب اصلی"""
-        # مسیر تلگرام
-        ttk.Label(parent, text="📁 مسیر تلگرام:").grid(row=0, column=0, sticky='w', pady=5)
-        self.telegram_path_var = tk.StringVar(value=self.config["telegram_path"])
-        ttk.Entry(parent, textvariable=self.telegram_path_var, width=70).grid(row=0, column=1, pady=5, sticky='ew')
-        
-        # نام گروه
-        ttk.Label(parent, text="👥 نام گروه:").grid(row=1, column=0, sticky='w', pady=5)
-        self.group_name_var = tk.StringVar(value=self.config["group_name"])
-        ttk.Entry(parent, textvariable=self.group_name_var, width=70).grid(row=1, column=1, pady=5, sticky='ew')
-        
-        # Chat ID
-        ttk.Label(parent, text="🆔 Chat ID:").grid(row=2, column=0, sticky='w', pady=5)
-        self.chat_id_var = tk.StringVar(value=self.config["chat_id"])
-        ttk.Entry(parent, textvariable=self.chat_id_var, width=70).grid(row=2, column=1, pady=5, sticky='ew')
-        
+        # انتخاب اکانت تلگرام
+        ttk.Label(parent, text="� انتخاب اکانت تلگرام:").grid(row=0, column=0, sticky='w', pady=5)
+        self.account_list = [acc["username"] for acc in self.config.get("telegram_accounts", [])]
+        self.account_var = tk.StringVar(value=self.account_list[0] if self.account_list else "")
+        self.account_combo = ttk.Combobox(parent, textvariable=self.account_var, values=self.account_list, width=67)
+        self.account_combo.grid(row=0, column=1, pady=5, sticky='ew')
+
+        # انتخاب گروه
+        ttk.Label(parent, text="👥 انتخاب گروه:").grid(row=1, column=0, sticky='w', pady=5)
+        self.group_list = [g["group_name"] for g in self.config.get("groups", [])]
+        self.group_var = tk.StringVar(value=self.group_list[0] if self.group_list else "")
+        self.group_combo = ttk.Combobox(parent, textvariable=self.group_var, values=self.group_list, width=67)
+        self.group_combo.grid(row=1, column=1, pady=5, sticky='ew')
+
         # پیام پایه
-        ttk.Label(parent, text="💬 پیام پایه:").grid(row=3, column=0, sticky='w', pady=5)
+        ttk.Label(parent, text="💬 پیام پایه:").grid(row=2, column=0, sticky='w', pady=5)
         self.base_message_text = tk.Text(parent, height=4, width=70)
         self.base_message_text.insert('1.0', self.config["base_message"])
-        self.base_message_text.grid(row=3, column=1, pady=5, sticky='ew')
-        
+        self.base_message_text.grid(row=2, column=1, pady=5, sticky='ew')
+
         # فاصله زمانی
-        ttk.Label(parent, text="⏰ فاصله زمانی (ثانیه):").grid(row=4, column=0, sticky='w', pady=5)
+        ttk.Label(parent, text="⏰ فاصله زمانی (ثانیه):").grid(row=3, column=0, sticky='w', pady=5)
         self.interval_var = tk.DoubleVar(value=self.config["interval_seconds"])
-        ttk.Spinbox(parent, from_=10, to=3600, textvariable=self.interval_var, width=20).grid(row=4, column=1, sticky='w', pady=5)
-        
-        # تنظیم ستون‌ها
+        ttk.Spinbox(parent, from_=10, to=3600, textvariable=self.interval_var, width=20).grid(row=3, column=1, sticky='w', pady=5)
+
+        # توضیح جدید:
+        ttk.Label(parent, text="اکانت و گروه را انتخاب کنید. برای افزودن/ویرایش، فایل ai_config.json را ویرایش کنید.", foreground="#2980b9").grid(row=4, column=0, columnspan=2, sticky='w', pady=5)
+
         parent.columnconfigure(1, weight=1)
     
     def setup_ai_tab(self, parent):
@@ -341,10 +415,19 @@ class TelegramAIMessenger:
         self.log_message(f"✅ پیام تست: {test_message[:50]}...")
     
     def open_telegram(self):
-        """باز کردن تلگرام دسکتاپ"""
+        """باز کردن تلگرام دسکتاپ با استفاده از اکانت انتخاب شده"""
         try:
-            telegram_path = self.telegram_path_var.get()
-            self.log_message("📱 در حال باز کردن تلگرام...")
+            # دریافت اطلاعات اکانت انتخاب شده
+            selected_account = self.account_var.get().strip()
+            account_info = next((acc for acc in self.config.get("telegram_accounts", []) if acc["username"] == selected_account), None)
+            
+            if account_info:
+                telegram_path = account_info.get("telegram_path", "")
+            else:
+                # fallback به تنظیمات قدیمی
+                telegram_path = self.config.get("telegram_path", "")
+            
+            self.log_message(f"📱 در حال باز کردن تلگرام برای اکانت: {selected_account}...")
             
             if "WindowsApps" in telegram_path:
                 try:
@@ -369,15 +452,27 @@ class TelegramAIMessenger:
             messagebox.showerror("خطا", error_msg)
     
     def find_and_open_group(self):
-        """یافتن و باز کردن گروه"""
+        """یافتن و باز کردن گروه با استفاده از تنظیمات جدید"""
         try:
-            chat_id = self.chat_id_var.get().strip()
-            group_name = self.group_name_var.get().strip()
+            # دریافت اطلاعات گروه انتخاب شده
+            selected_group = self.group_var.get().strip()
+            group_info = next((g for g in self.config.get("groups", []) if g["group_name"] == selected_group), None)
             
+            if not group_info:
+                # fallback به روش قدیمی اگر گروه جدید انتخاب نشده
+                if hasattr(self, 'chat_id_var') and hasattr(self, 'group_name_var'):
+                    chat_id = self.chat_id_var.get().strip()
+                    group_name = self.group_name_var.get().strip()
+                else:
+                    raise ValueError("گروه انتخاب نشده یا وجود ندارد")
+            else:
+                chat_id = group_info.get("chat_id", "")
+                group_name = group_info.get("group_name", "")
+
             if not chat_id and not group_name:
                 raise ValueError("نام گروه یا Chat ID وارد نشده")
-            
-            self.log_message("🔍 جستجو برای گروه...")
+
+            self.log_message(f"🔍 جستجو برای گروه: {group_name} / {chat_id}")
             
             # باز کردن جستجو
             pyautogui.hotkey('ctrl', 'k')
@@ -389,8 +484,6 @@ class TelegramAIMessenger:
             
             # جستجو (اولویت با Chat ID)
             search_term = chat_id if chat_id else group_name
-            self.log_message(f"🔎 جستجو برای: {search_term}")
-            
             pyperclip.copy(search_term)
             pyautogui.hotkey('ctrl', 'v')
             time.sleep(2)
@@ -492,8 +585,8 @@ class TelegramAIMessenger:
             return
         
         # بررسی ورودی‌ها
-        if not self.group_name_var.get().strip() and not self.chat_id_var.get().strip():
-            messagebox.showerror("خطا", "لطفاً نام گروه یا Chat ID را وارد کنید")
+        if not self.group_var.get().strip():
+            messagebox.showerror("خطا", "لطفاً گروه را انتخاب کنید")
             return
         
         if not self.base_message_text.get('1.0', tk.END).strip():
@@ -529,9 +622,7 @@ class TelegramAIMessenger:
     
     def save_settings(self):
         """ذخیره تنظیمات"""
-        self.config["telegram_path"] = self.telegram_path_var.get()
-        self.config["group_name"] = self.group_name_var.get()
-        self.config["chat_id"] = self.chat_id_var.get()
+        # بروزرسانی تنظیمات با مقادیر جدید
         self.config["base_message"] = self.base_message_text.get('1.0', tk.END).strip()
         self.config["interval_seconds"] = self.interval_var.get()
         self.config["ollama_url"] = self.ollama_url_var.get()
@@ -540,6 +631,12 @@ class TelegramAIMessenger:
         self.config["personality"] = self.personality_var.get()
         self.config["message_variety"] = self.message_variety_var.get()
         self.config["use_emojis"] = self.use_emojis_var.get()
+        
+        # ذخیره انتخاب‌های فعلی اکانت و گروه
+        if hasattr(self, 'account_var'):
+            self.config["selected_account"] = self.account_var.get()
+        if hasattr(self, 'group_var'):
+            self.config["selected_group"] = self.group_var.get()
         
         self.save_config()
         self.log_message("💾 تنظیمات ذخیره شد")
