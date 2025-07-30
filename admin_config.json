@@ -1,0 +1,97 @@
+{
+  "version": "3.0.0",
+  "product_name": "Telegram AI Admin Pro",
+  "license_key": "",
+  "ollama_url": "http://127.0.0.1:11434",
+  "ollama_text_model": "llama3.1:8b",
+  "ollama_vision_model": "llava",
+  "telegram_accounts": [
+    {
+      "username": "تلگرام Portable",
+      "telegram_path": "C:\\Users\\Arian\\OneDrive\\Desktop\\tportable-x64.5.16.6\\Telegram\\Telegram.exe",
+      "account_type": "primary"
+    },
+    {
+      "username": "اکانت اصلی",
+      "telegram_path": "C:\\Program Files\\WindowsApps\\TelegramMessengerLLP.TelegramDesktop_5.16.5.0_x64__t4vj0pshhgkwm\\Telegram.exe",
+      "account_type": "secondary"
+    }
+  ],
+  "managed_chats": [
+    {
+      "id": "-4973474959",
+      "name": "getharemmeow",
+      "type": "group",
+      "auto_reply": true,
+      "response_style": "friendly_professional",
+      "language": "fa",
+      "priority": "high",
+      "custom_prompts": {
+        "greeting": "سلام! چطور می‌تونم کمکتون کنم؟",
+        "farewell": "موفق باشید! 🌟",
+        "error": "متأسفم، مشکلی پیش آمده. لطفاً دوباره تلاش کنید."
+      }
+    },
+    {
+      "id": "8028348127",
+      "name": "Melika",
+      "type": "private",
+      "auto_reply": true,
+      "response_style": "warm_personal",
+      "language": "fa",
+      "priority": "high"
+    }
+  ],
+  "response_settings": {
+    "auto_reply": true,
+    "response_delay": 0.5,
+    "max_message_length": 500,
+    "professional_mode": true,
+    "multi_language": true,
+    "emotion_detection": true,
+    "sentiment_analysis": true,
+    "context_memory": true,
+    "response_templates": {
+      "question": "این سوال جالبی است! {response}",
+      "complaint": "متوجه نگرانی شما هستم. {response}",
+      "thanks": "خواهش می‌کنم! خوشحالم که تونستم کمک کنم. {response}",
+      "urgent": "⚠️ این مورد فوری رو بررسی می‌کنم: {response}"
+    }
+  },
+  "admin_settings": {
+    "max_concurrent_chats": 20,
+    "backup_interval": 1800,
+    "log_level": "INFO",
+    "security_mode": "HIGH",
+    "auto_backup": true,
+    "performance_monitoring": true,
+    "real_time_analytics": true,
+    "multi_account_support": true
+  },
+  "ai_features": {
+    "vision_analysis": true,
+    "text_analysis": true,
+    "emotion_recognition": true,
+    "language_detection": true,
+    "spam_filtering": true,
+    "auto_moderation": true,
+    "smart_scheduling": true,
+    "predictive_responses": true
+  },
+  "commercial_features": {
+    "license_required": true,
+    "usage_analytics": true,
+    "client_management": true,
+    "white_label_support": true,
+    "api_access": true,
+    "custom_branding": true,
+    "enterprise_support": true
+  },
+  "security_settings": {
+    "encryption_level": "AES-256",
+    "access_control": true,
+    "audit_logging": true,
+    "secure_storage": true,
+    "data_anonymization": true
+  }
+}

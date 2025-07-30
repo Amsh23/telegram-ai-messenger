@@ -1,0 +1,59 @@
+# کتابخانه‌های ضروری برای Admin Pro v3.0
+pyautogui==0.9.54
+pyperclip==1.8.2
+Pillow==10.0.0
+requests==2.31.0
+opencv-python==4.12.0.88
+numpy==2.2.6
+python-telegram-bot==20.7
+pygetwindow==0.0.9
+
+# کتابخانه‌های پایگاه داده و لاگ
+sqlite3
+logging
+
+# کتابخانه‌های رابط کاربری پیشرفته
+tkinter
+ttk
+
+# کتابخانه‌های امنیت و رمزگذاری
+cryptography==41.0.7
+hashlib
+
+# کتابخانه‌های تاریخ و زمان
+datetime
+time
+
+# کتابخانه‌های مسیر و فایل
+pathlib
+os
+json
+
+# کتابخانه‌های Threading و عملیات همزمان
+threading
+subprocess
+
+# کتابخانه‌های تحلیل و آمار (اختیاری)
+pandas>=2.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# کتابخانه‌های عملکرد سیستم (اختیاری)
+psutil>=5.9.0
+
+# کتابخانه‌های Web و API (اختیاری)
+flask>=2.3.0
+fastapi>=0.100.0
+
+# Vision AI و Computer Vision
+base64
+
+# کتابخانه‌های متن و زبان‌شناسی (اختیاری)
+nltk>=3.8
+textblob>=0.17.0
+
+# نیازمندی‌های Ollama
+# ollama (نصب جداگانه مورد نیاز)
+# مدل‌های مورد نیاز:
+# - llama3.1:8b (مدل متنی)
+# - llava (مدل Vision)
