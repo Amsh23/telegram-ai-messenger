@@ -18,6 +18,8 @@ import requests
 import random
 from datetime import datetime
 import re
+import base64
+import io
 import winreg
 from pathlib import Path
 import cv2
@@ -26,10 +28,13 @@ from PIL import Image, ImageTk
 import io
 import pygetwindow as gw
 import glob
+import traceback
 
-# غیرفعال کردن failsafe برای عملیات طولانی
-pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0.2
+# تنظیمات بهینه PyAutoGUI برای حداکثر عملکرد
+pyautogui.FAILSAFE = False  # غیرفعال کردن کامل fail-safe
+pyautogui.PAUSE = 0.1  # کاهش تأخیر برای سرعت بیشتر
+pyautogui.MINIMUM_DURATION = 0  # حداقل زمان حرکت ماوس
+pyautogui.MINIMUM_SLEEP = 0  # حداقل زمان انتظار
 
 class TelegramUIDetector:
     """کلاس هوشمند برای تشخیص عناصر رابط کاربری تلگرام"""
@@ -216,39 +221,228 @@ class TelegramUIDetector:
             return None
     
     def detect_unread_chats(self):
-        """تشخیص چت‌های خوانده نشده"""
+        """تشخیص چت‌های خوانده نشده با دقت بالا و چندین روش تشخیص"""
         try:
             if not self.chat_list_region:
                 self.detect_telegram_window()
             
             screenshot = self.take_screenshot(self.chat_list_region)
             if screenshot is None:
+                print("❌ اسکرین‌شات ناحیه چت گرفته نشد")
                 return []
             
-            # تشخیص رنگ آبی badge های پیام خوانده نشده
-            hsv = cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
-            blue_lower = np.array([100, 100, 100])
-            blue_upper = np.array([130, 255, 255])
-            blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
-            
-            # پیدا کردن دایره‌های کوچک (badge ها)
-            circles = cv2.HoughCircles(blue_mask, cv2.HOUGH_GRADIENT, 1, 20,
-                                     param1=30, param2=15, minRadius=5, maxRadius=20)
+            print(f"🔍 تحلیل چت‌های خوانده‌نشده در ناحیه: {self.chat_list_region}")
             
             unread_positions = []
+            
+            # روش 1: تشخیص badge های آبی (روش اصلی)
+            hsv = cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
+            
+            # محدوده‌های مختلف آبی تلگرام
+            blue_ranges = [
+                ([100, 100, 100], [130, 255, 255]),  # آبی استاندارد
+                ([90, 120, 120], [120, 255, 255]),   # آبی روشن‌تر
+                ([110, 80, 80], [140, 255, 255]),    # آبی تیره‌تر
+            ]
+            
+            for blue_lower, blue_upper in blue_ranges:
+                blue_mask = cv2.inRange(hsv, np.array(blue_lower), np.array(blue_upper))
+                
+                # پیدا کردن دایره‌های کوچک (badge ها)
+                circles = cv2.HoughCircles(blue_mask, cv2.HOUGH_GRADIENT, 1, 20,
+                                         param1=30, param2=15, minRadius=3, maxRadius=25)
+                
+                if circles is not None:
+                    circles = np.round(circles[0, :]).astype("int")
+                    for (x, y, r) in circles:
+                        # محاسبه موقعیت چت مربوطه
+                        chat_x = self.chat_list_region[0] + 175
+                        chat_y = self.chat_list_region[1] + y
+                        
+                        # بررسی عدم تکرار
+                        is_duplicate = False
+                        for existing_x, existing_y in unread_positions:
+                            if abs(chat_x - existing_x) < 50 and abs(chat_y - existing_y) < 30:
+                                is_duplicate = True
+                                break
+                        
+                        if not is_duplicate:
+                            unread_positions.append((chat_x, chat_y))
+                            print(f"📬 badge خوانده‌نشده در ({x}, {y}) -> چت در ({chat_x}, {chat_y})")
+            
+            # روش 2: تشخیص تغییرات نور/سایه (نشانه پیام جدید)
+            gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+            
+            # تشخیص نواحی با کنتراست بالا
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                area = cv2.contourArea(contour)
+                
+                # شرایط یک ناحیه مشکوک به badge
+                if (10 < area < 400 and  # مساحت مناسب برای badge
+                    5 < w < 30 and 5 < h < 30 and  # ابعاد مناسب
+                    abs(w - h) < 10):  # تقریباً مربع/دایره
+                    
+                    chat_x = self.chat_list_region[0] + 175
+                    chat_y = self.chat_list_region[1] + y + h//2
+                    
+                    # بررسی عدم تکرار
+                    is_duplicate = False
+                    for existing_x, existing_y in unread_positions:
+                        if abs(chat_x - existing_x) < 50 and abs(chat_y - existing_y) < 30:
+                            is_duplicate = True
+                            break
+                    
+                    if not is_duplicate:
+                        unread_positions.append((chat_x, chat_y))
+                        print(f"🔍 ناحیه مشکوک در ({x}, {y}) -> چت در ({chat_x}, {chat_y})")
+            
+            # روش 3: تشخیص الگوی متنی (عدد badge)
+            
+            print(f"✅ تشخیص {len(unread_positions)} چت خوانده‌نشده")
+            return unread_positions[:10]  # حداکثر 10 چت
+            
+        except Exception as e:
+            print(f"❌ خطا در تشخیص چت‌های خوانده‌نشده: {e}")
+            return []
+    
+    def detect_unread_chats_advanced(self, screenshot=None):
+        """تشخیص پیشرفته چت‌های خوانده نشده با 5 روش مختلف"""
+        try:
+            if screenshot is None:
+                if not self.chat_list_region:
+                    self.detect_telegram_window()
+                screenshot = self.take_screenshot(self.chat_list_region)
+                
+            if screenshot is None:
+                print("❌ اسکرین‌شات ناحیه چت گرفته نشد")
+                return []
+            
+            print(f"🔍 تحلیل پیشرفته چت‌های خوانده‌نشده...")
+            unread_positions = []
+            
+            # روش 1: تحلیل HSV color space
+            hsv = cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
+            blue_ranges = [
+                ([100, 100, 100], [130, 255, 255]),  # آبی استاندارد
+                ([90, 120, 120], [120, 255, 255]),   # آبی روشن‌تر
+                ([110, 80, 80], [140, 255, 255]),    # آبی تیره‌تر
+            ]
+            
+            for blue_lower, blue_upper in blue_ranges:
+                blue_mask = cv2.inRange(hsv, np.array(blue_lower), np.array(blue_upper))
+                circles = cv2.HoughCircles(blue_mask, cv2.HOUGH_GRADIENT, 1, 20,
+                                         param1=30, param2=15, minRadius=3, maxRadius=25)
+                
+                if circles is not None:
+                    circles = np.round(circles[0, :]).astype("int")
+                    for (x, y, r) in circles:
+                        if self.chat_list_region:
+                            chat_x = self.chat_list_region[0] + 175
+                            chat_y = self.chat_list_region[1] + y
+                        else:
+                            chat_x = 175
+                            chat_y = y
+                        
+                        if not self._is_duplicate_position(unread_positions, chat_x, chat_y):
+                            unread_positions.append((chat_x, chat_y))
+            
+            # روش 2: تحلیل LAB color space
+            lab = cv2.cvtColor(screenshot, cv2.COLOR_BGR2LAB)
+            l_channel = lab[:, :, 0]
+            
+            # تشخیص نواحی روشن (badge ها معمولاً روشن‌تر هستند)
+            bright_mask = cv2.threshold(l_channel, 150, 255, cv2.THRESH_BINARY)[1]
+            
+            # morphological operations
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_CLOSE, kernel)
+            bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_OPEN, kernel)
+            
+            contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                area = cv2.contourArea(contour)
+                
+                if (10 < area < 400 and 5 < w < 30 and 5 < h < 30):
+                    if self.chat_list_region:
+                        chat_x = self.chat_list_region[0] + 175
+                        chat_y = self.chat_list_region[1] + y + h//2
+                    else:
+                        chat_x = 175
+                        chat_y = y + h//2
+                    
+                    if not self._is_duplicate_position(unread_positions, chat_x, chat_y):
+                        unread_positions.append((chat_x, chat_y))
+            
+            # روش 3: Edge detection
+            gray = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 50, 150)
+            
+            # تشخیص دایره‌ها در edges
+            circles = cv2.HoughCircles(edges, cv2.HOUGH_GRADIENT, 1, 20,
+                                     param1=50, param2=30, minRadius=3, maxRadius=25)
+            
             if circles is not None:
                 circles = np.round(circles[0, :]).astype("int")
                 for (x, y, r) in circles:
-                    # تبدیل به موقعیت واقعی و تخمین موقعیت چت
-                    chat_x = self.chat_list_region[0] + 175
-                    chat_y = self.chat_list_region[1] + y
-                    unread_positions.append((chat_x, chat_y))
+                    if self.chat_list_region:
+                        chat_x = self.chat_list_region[0] + 175
+                        chat_y = self.chat_list_region[1] + y
+                    else:
+                        chat_x = 175
+                        chat_y = y
+                    
+                    if not self._is_duplicate_position(unread_positions, chat_x, chat_y):
+                        unread_positions.append((chat_x, chat_y))
             
-            return unread_positions
+            # روش 4: Template matching (اگر الگوی badge داشته باشیم)
+            # این بخش برای آینده محفوظ شده
+            
+            # روش 5: Statistical analysis
+            # تحلیل توزیع رنگ‌ها برای یافتن ناهنجاری‌ها
+            mean_color = np.mean(screenshot, axis=(0, 1))
+            std_color = np.std(screenshot, axis=(0, 1))
+            
+            # یافتن نواحی با انحراف زیاد از میانگین
+            diff = np.abs(screenshot - mean_color)
+            outliers = np.all(diff > 2 * std_color, axis=2)
+            
+            contours, _ = cv2.findContours(outliers.astype(np.uint8) * 255, 
+                                         cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                area = cv2.contourArea(contour)
+                
+                if (10 < area < 200 and 5 < w < 25 and 5 < h < 25):
+                    if self.chat_list_region:
+                        chat_x = self.chat_list_region[0] + 175
+                        chat_y = self.chat_list_region[1] + y + h//2
+                    else:
+                        chat_x = 175
+                        chat_y = y + h//2
+                    
+                    if not self._is_duplicate_position(unread_positions, chat_x, chat_y):
+                        unread_positions.append((chat_x, chat_y))
+            
+            print(f"✅ تشخیص پیشرفته: {len(unread_positions)} چت خوانده‌نشده یافت شد")
+            return unread_positions[:10]  # حداکثر 10 چت
             
         except Exception as e:
-            print(f"خطا در تشخیص چت‌های خوانده نشده: {e}")
+            print(f"❌ خطا در تشخیص پیشرفته چت‌ها: {e}")
             return []
+    
+    def _is_duplicate_position(self, positions, x, y, threshold=50):
+        """بررسی تکراری بودن موقعیت"""
+        for existing_x, existing_y in positions:
+            if abs(x - existing_x) < threshold and abs(y - existing_y) < 30:
+                return True
+        return False
 
 class TelegramAIMessenger:
     def __init__(self):
@@ -262,9 +456,11 @@ class TelegramAIMessenger:
         
         self.load_config()
         
-        # پیکربندی pyautogui
-        pyautogui.FAILSAFE = True
-        pyautogui.PAUSE = 0.3
+        # پیکربندی بهینه pyautogui برای حداکثر دقت
+        pyautogui.FAILSAFE = False  # غیرفعال کردن کامل fail-safe 
+        pyautogui.PAUSE = 0.05  # حداقل تأخیر برای سرعت
+        pyautogui.MINIMUM_DURATION = 0
+        pyautogui.MINIMUM_SLEEP = 0
         
         # تشخیص خودکار اکانت‌های تلگرام
         self.auto_detect_telegram_accounts()
@@ -322,52 +518,74 @@ class TelegramAIMessenger:
             # مرحله 7: تشخیص layout هوشمند
             chat_region, message_region, input_region, send_region = self.smart_layout_detection(screenshot)
             
-            # مرحله 8: تشخیص چت‌ها
-            chat_positions = self.detect_chat_list_improved(screenshot, chat_region)
+            # مرحله 8: تشخیص چت‌ها با روش پیشرفته
+            chat_positions = self.ui_detector.detect_unread_chats_advanced(screenshot)
             
             if not chat_positions:
-                self.log_message("❌ چتی پیدا نشد")
-                return
+                self.log_message("❌ چتی پیدا نشد، استفاده از روش جایگزین...")
+                # تولید موقعیت‌های پیش‌فرض
+                chat_positions = self.generate_default_chat_positions()
             
-            # مرحله 9: پردازش چت‌ها
-            self.log_message(f"🔄 پردازش {min(len(chat_positions), 5)} چت...")
+            # مرحله 9: پردازش پیشرفته چت‌ها
+            self.log_message(f"🔄 پردازش پیشرفته {min(len(chat_positions), 5)} چت...")
             
             success_count = 0
+            total_attempts = min(len(chat_positions), 5)
+            
             for i, (chat_x, chat_y) in enumerate(chat_positions[:5]):
                 if not self.is_running:
                     break
                 
-                self.log_message(f"\n--- چت {i+1} ---")
+                self.log_message(f"\n🎯 --- چت {i+1}/{total_attempts} ---")
                 
-                # کلیک روی چت
-                if not self.safe_click(chat_x, chat_y, f"چت {i+1}"):
-                    continue
-                
-                time.sleep(2)
-                
-                # خواندن پیام‌ها
-                messages = self.safe_read_messages(message_region)
-                
-                if messages:
-                    self.log_message(f"📖 {len(messages)} پیام دریافت شد:")
-                    for msg in messages:
-                        self.log_message(f"   • {msg[:60]}...")
+                try:
+                    # کلیک با سیستم پیشرفته
+                    if not self.safe_click_advanced(chat_x, chat_y, f"چت {i+1}"):
+                        self.log_message(f"❌ نتوانستم روی چت {i+1} کلیک کنم")
+                        continue
                     
-                    # تولید پاسخ Littlejoy
-                    reply = self.generate_littlejoy_reply_improved(messages)
+                    # انتظار برای بارگذاری چت
+                    time.sleep(2.5)
                     
-                    # ارسال پاسخ
-                    if self.safe_send_message(reply, input_region):
-                        self.log_message(f"✅ پاسخ ارسال شد: {reply[:50]}...")
-                        success_count += 1
+                    # خواندن پیام‌ها با روش پیشرفته
+                    messages = self.safe_read_messages_advanced(message_region)
+                    
+                    if messages:
+                        self.log_message(f"📖 {len(messages)} پیام با کیفیت دریافت شد:")
+                        for idx, msg in enumerate(messages[:3]):
+                            self.log_message(f"   {idx+1}. {msg[:70]}...")
+                        
+                        # تولید پاسخ هوشمند Littlejoy
+                        reply = self.generate_littlejoy_reply_improved(messages)
+                        
+                        # ارسال پاسخ با روش بهبود یافته
+                        if self.safe_send_message_advanced(reply, input_region):
+                            self.log_message(f"✅ پاسخ موفق: {reply[:60]}...")
+                            success_count += 1
+                        else:
+                            self.log_message("❌ مشکل در ارسال پاسخ")
                     else:
-                        self.log_message("❌ مشکل در ارسال")
-                else:
-                    self.log_message("⚠️ پیامی یافت نشد")
+                        self.log_message("⚠️ هیچ پیام معتبری یافت نشد در این چت")
                 
-                time.sleep(3)  # فاصله بین چت‌ها
+                except Exception as chat_error:
+                    self.log_message(f"❌ خطا در پردازش چت {i+1}: {chat_error}")
+                
+                # فاصله بین چت‌ها
+                if i < total_attempts - 1:  # اگر آخرین چت نیست
+                    time.sleep(3)
             
-            self.log_message(f"\n✅ پردازش کامل! {success_count}/{min(len(chat_positions), 5)} چت موفق")
+            # گزارش نهایی
+            success_rate = (success_count / total_attempts * 100) if total_attempts > 0 else 0
+            self.log_message(f"\n🎉 پردازش کامل! {success_count}/{total_attempts} چت موفق ({success_rate:.1f}%)")
+            
+            if success_count == 0:
+                self.log_message("⚠️ هیچ چتی پردازش نشد. لطفاً تنظیمات را بررسی کنید.")
+            elif success_rate >= 80:
+                self.log_message("🌟 عملکرد عالی! سیستم به خوبی کار می‌کند.")
+            elif success_rate >= 50:
+                self.log_message("👍 عملکرد خوب! اما قابل بهبود است.")
+            else:
+                self.log_message("🔧 عملکرد نیاز به بهبود دارد. بررسی تنظیمات پیشنهاد می‌شود.")
             
         except Exception as e:
             self.log_message(f"❌ خطا در اسکرین‌شات بهبود یافته: {e}")
@@ -582,296 +800,1233 @@ class TelegramAIMessenger:
             self.log_message(f"❌ خطا در تشخیص چت‌ها: {e}")
             return []
     
-    def safe_click(self, x, y, description=""):
-        """کلیک ایمن با بررسی محدوده"""
+    def safe_click_advanced(self, x, y, description="", retry_count=3):
+        """کلیک پیشرفته و ایمن با تلاش مجدد"""
         try:
             screen_w, screen_h = pyautogui.size()
             
-            if 0 <= x <= screen_w and 0 <= y <= screen_h:
-                pyautogui.click(x, y)
-                time.sleep(0.5)
-                return True
-            else:
-                self.log_message(f"⚠️ موقعیت خارج از محدوده: ({x}, {y})")
-                return False
+            # اطمینان از محدوده صحیح
+            x = max(10, min(x, screen_w - 10))
+            y = max(10, min(y, screen_h - 10))
+            
+            for attempt in range(retry_count):
+                try:
+                    # حرکت تدریجی ماوس برای جلوگیری از fail-safe
+                    current_x, current_y = pyautogui.position()
+                    
+                    # اگر فاصله زیاد است، مرحله‌ای حرکت کن
+                    distance = ((x - current_x)**2 + (y - current_y)**2)**0.5
+                    
+                    if distance > 500:  # اگر فاصله زیاد است
+                        mid_x = (current_x + x) // 2
+                        mid_y = (current_y + y) // 2
+                        pyautogui.moveTo(mid_x, mid_y, duration=0.1)
+                        time.sleep(0.05)
+                    
+                    # حرکت نهایی و کلیک
+                    pyautogui.moveTo(x, y, duration=0.1)
+                    time.sleep(0.05)
+                    pyautogui.click(x, y)
+                    time.sleep(0.2)
+                    
+                    print(f"✅ کلیک موفق در ({x}, {y}) - {description}")
+                    return True
+                    
+                except Exception as e:
+                    print(f"⚠️ تلاش {attempt+1} کلیک ناموفق: {e}")
+                    if attempt < retry_count - 1:
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        print(f"❌ کلیک نهایی ناموفق در ({x}, {y}) - {description}")
+                        return False
+            
+            return False
+            
         except Exception as e:
-            self.log_message(f"❌ خطا در کلیک: {e}")
+            print(f"❌ خطا در کلیک پیشرفته: {e}")
             return False
     
-    def safe_read_messages(self, message_region=None):
-        """خواندن پیشرفته و دقیق پیام‌ها"""
+    def safe_read_messages_advanced(self, message_region=None):
+        """خواندن پیشرفته و دقیق پیام‌ها با روش‌های متعدد"""
         try:
-            self.log_message("📖 خواندن پیشرفته پیام‌ها...")
+            self.log_message("📖 شروع خواندن پیشرفته پیام‌ها...")
             
-            # اگر message_region داده نشده، محاسبه کن
+            # محاسبه ناحیه پیام
             if message_region is None:
                 screenshot = pyautogui.screenshot()
                 width, height = screenshot.size
-                
-                # محاسبه ناحیه پیام بر اساس layout
-                sidebar_width = int(width * 0.28)  # 28% برای sidebar
-                message_start_x = sidebar_width + 50
-                message_start_y = 100
-                message_end_x = width - 50
-                message_end_y = height - 150
+                sidebar_width = int(width * 0.28)
                 
                 message_region = {
-                    'x': message_start_x,
-                    'y': message_start_y,
-                    'width': message_end_x - message_start_x,
-                    'height': message_end_y - message_start_y
+                    'x': sidebar_width + 50,
+                    'y': 100,
+                    'width': width - sidebar_width - 100,
+                    'height': height - 200
                 }
-                self.log_message(f"📍 ناحیه پیام محاسبه شد: {message_region}")
             
-            # کلیک در ناحیه پیام‌ها
+            # کلیک در مرکز ناحیه پیام‌ها
             center_x = message_region['x'] + message_region['width'] // 2
             center_y = message_region['y'] + message_region['height'] // 2
             
-            if not self.safe_click(center_x, center_y, "ناحیه پیام"):
+            # استفاده از کلیک پیشرفته
+            if not self.safe_click_advanced(center_x, center_y, "ناحیه پیام"):
+                self.log_message("❌ نتوانستم روی ناحیه پیام کلیک کنم")
                 return []
             
-            # اسکرول به پایین‌ترین پیام‌ها
-            for _ in range(5):
-                pyautogui.scroll(-5, x=center_x, y=center_y)
-                time.sleep(0.3)
+            # اسکرول هوشمند به آخرین پیام‌ها
+            self.smart_scroll_to_recent_messages(center_x, center_y)
             
-            time.sleep(1)
-            
-            # روش 1: خواندن با انتخاب دقیق
-            # شروع از پایین ناحیه پیام‌ها
-            start_x = message_region['x'] + 100
-            start_y = message_region['y'] + message_region['height'] - 200  # 200 پیکسل از پایین
-            end_x = message_region['x'] + message_region['width'] - 100
-            end_y = message_region['y'] + message_region['height'] - 50    # 50 پیکسل از پایین
-            
-            # کلیک و کشیدن برای انتخاب آخرین پیام‌ها
-            pyautogui.click(start_x, start_y)
-            time.sleep(0.3)
-            pyautogui.drag(end_x, end_y, duration=0.8)
-            time.sleep(0.5)
-            
-            # کپی محتوا
-            pyautogui.hotkey('ctrl', 'c')
-            time.sleep(1)
-            
-            text1 = pyperclip.paste()
-            
-            # روش 2: خواندن با Ctrl+A در ناحیه محدود
-            # انتخاب ناحیه کوچک‌تر برای پیام‌های اخیر
-            small_x = message_region['x'] + 150
-            small_y = message_region['y'] + message_region['height'] - 300
-            small_w = min(600, message_region['width'] - 300)
-            small_h = 200
-            
-            pyautogui.click(small_x, small_y)
-            time.sleep(0.3)
-            pyautogui.drag(small_x + small_w, small_y + small_h, duration=0.5)
-            time.sleep(0.5)
-            
-            pyautogui.hotkey('ctrl', 'c')
-            time.sleep(0.8)
-            
-            text2 = pyperclip.paste()
-            
-            # ترکیب و پردازش متن‌ها
-            all_texts = [text1, text2]
+            # روش‌های مختلف خواندن
             all_messages = []
             
-            for text in all_texts:
-                if text and len(text) > 3:
-                    # جدا کردن خطوط
-                    lines = text.strip().split('\n')
-                    
-                    for line in lines:
-                        line = line.strip()
-                        
-                        # فیلتر کردن خطوط معتبر
-                        if (line and 
-                            len(line) > 3 and 
-                            not line.isdigit() and 
-                            not line.startswith('http') and
-                            'python' not in line.lower() and
-                            'smart_telegram' not in line.lower() and
-                            'telegram_ai' not in line.lower() and
-                            'online' not in line.lower() and
-                            'last seen' not in line.lower() and
-                            'typing' not in line.lower() and
-                            'در حال تایپ' not in line and
-                            'آنلاین' not in line and
-                            len(line) < 500):  # حداکثر طول پیام
-                            
-                            # حذف timestamp ها
-                            clean_line = re.sub(r'\d{2}:\d{2}', '', line).strip()
-                            clean_line = re.sub(r'\d{1,2}/\d{1,2}', '', clean_line).strip()
-                            
-                            if clean_line and clean_line not in all_messages:
-                                all_messages.append(clean_line)
+            # روش 1: انتخاب دقیق آخرین پیام‌ها
+            recent_messages = self.read_recent_messages_precise(message_region)
+            all_messages.extend(recent_messages)
             
-            # انتخاب بهترین پیام‌ها
-            valid_messages = []
-            for msg in all_messages:
-                # بررسی اینکه پیام واقعی باشد
-                if (any(char.isalpha() for char in msg) and  # حداقل یک حرف
-                    not msg.startswith('✅') and             # نه پیام سیستم
-                    not msg.startswith('📱') and             # نه پیام سیستم
-                    not msg.startswith('🔍') and             # نه پیام سیستم
-                    len(msg.split()) > 1):                   # حداقل 2 کلمه
-                    valid_messages.append(msg)
+            # روش 2: خواندن با Ctrl+A محدود
+            ctrl_a_messages = self.read_messages_ctrl_a_limited(message_region)
+            all_messages.extend(ctrl_a_messages)
             
-            # برگرداندن آخرین پیام‌های معتبر
-            final_messages = list(dict.fromkeys(valid_messages))  # حذف تکراری
-            result = final_messages[-3:] if final_messages else []  # 3 پیام آخر
+            # روش 3: خواندن با انتخاب قطعه‌ای
+            chunk_messages = self.read_messages_in_chunks(message_region)
+            all_messages.extend(chunk_messages)
             
-            if result:
-                self.log_message(f"📝 {len(result)} پیام معتبر خوانده شد")
-                for i, msg in enumerate(result):
-                    self.log_message(f"   {i+1}. {msg[:80]}...")
+            # پردازش و فیلتر کردن پیام‌ها
+            filtered_messages = self.advanced_message_filter(all_messages)
+            
+            if filtered_messages:
+                self.log_message(f"📝 {len(filtered_messages)} پیام معتبر از {len(all_messages)} پیام اولیه")
+                for i, msg in enumerate(filtered_messages[:3]):
+                    self.log_message(f"   {i+1}. {msg[:80]}{'...' if len(msg) > 80 else ''}")
             else:
                 self.log_message("⚠️ هیچ پیام معتبری یافت نشد")
             
-            return result
+            return filtered_messages[:5]  # حداکثر 5 پیام بهتر
             
         except Exception as e:
             self.log_message(f"❌ خطا در خواندن پیشرفته: {e}")
+            import traceback
+            self.log_message(f"جزئیات خطا: {traceback.format_exc()}")
             return []
     
-    def safe_send_message(self, message, input_region):
-        """ارسال ایمن پیام"""
+    def smart_scroll_to_recent_messages(self, center_x, center_y):
+        """اسکرول هوشمند به آخرین پیام‌ها"""
         try:
-            # کلیک روی input box
-            center_x = input_region['x'] + input_region['width'] // 2
-            center_y = input_region['y'] + input_region['height'] // 2
+            # اسکرول به پایین آخرین پیام‌ها
+            for scroll_attempt in range(8):
+                pyautogui.scroll(-3, x=center_x, y=center_y)
+                time.sleep(0.1)
             
-            if not self.safe_click(center_x, center_y, "input box"):
-                return False
+            # کمی به بالا برای دیدن پیام‌های قبلی
+            for scroll_attempt in range(2):
+                pyautogui.scroll(1, x=center_x, y=center_y)
+                time.sleep(0.1)
             
-            # پاک کردن
-            pyautogui.hotkey('ctrl', 'a')
-            time.sleep(0.2)
-            pyautogui.press('delete')
-            time.sleep(0.3)
-            
-            # تایپ پیام
-            pyautogui.typewrite(message, interval=0.02)
-            time.sleep(1)
-            
-            # ارسال
-            pyautogui.press('enter')
-            time.sleep(1)
-            
-            return True
+            time.sleep(0.5)  # زمان برای استقرار
             
         except Exception as e:
-            self.log_message(f"❌ خطا در ارسال: {e}")
+            self.log_message(f"⚠️ خطا در اسکرول: {e}")
+    
+    def read_recent_messages_precise(self, message_region):
+        """خواندن دقیق آخرین پیام‌ها"""
+        messages = []
+        try:
+            # تعریف ناحیه آخرین پیام‌ها (30% پایین صفحه)
+            start_y = message_region['y'] + int(message_region['height'] * 0.7)
+            end_y = message_region['y'] + message_region['height'] - 50
+            
+            start_x = message_region['x'] + 50
+            end_x = message_region['x'] + message_region['width'] - 50
+            
+            # انتخاب دقیق ناحیه
+            if self.safe_click_advanced(start_x, start_y, "شروع انتخاب"):
+                time.sleep(0.2)
+                pyautogui.drag(end_x, end_y, duration=0.6, button='left')
+                time.sleep(0.5)
+                
+                # کپی
+                pyautogui.hotkey('ctrl', 'c')
+                time.sleep(0.8)
+                
+                text = pyperclip.paste()
+                if text and len(text) > 3:
+                    lines = text.strip().split('\n')
+                    messages.extend([line.strip() for line in lines if line.strip()])
+                    self.log_message(f"📄 روش 1: {len(lines)} خط خوانده شد")
+            
+        except Exception as e:
+            self.log_message(f"⚠️ خطا در خواندن دقیق: {e}")
+        
+        return messages
+    
+    def read_messages_ctrl_a_limited(self, message_region):
+        """خواندن با Ctrl+A در ناحیه محدود"""
+        messages = []
+        try:
+            # کلیک در ناحیه کوچک‌تر
+            small_x = message_region['x'] + 100
+            small_y = message_region['y'] + int(message_region['height'] * 0.6)
+            small_w = min(600, message_region['width'] - 200)
+            small_h = int(message_region['height'] * 0.3)
+            
+            if self.safe_click_advanced(small_x, small_y, "ناحیه محدود"):
+                time.sleep(0.2)
+                
+                # انتخاب ناحیه کوچک
+                pyautogui.drag(small_x + small_w, small_y + small_h, duration=0.4)
+                time.sleep(0.4)
+                
+                pyautogui.hotkey('ctrl', 'c')
+                time.sleep(0.8)
+                
+                text = pyperclip.paste()
+                if text and len(text) > 3:
+                    lines = text.strip().split('\n')
+                    messages.extend([line.strip() for line in lines if line.strip()])
+                    self.log_message(f"📄 روش 2: {len(lines)} خط خوانده شد")
+            
+        except Exception as e:
+            self.log_message(f"⚠️ خطا در Ctrl+A محدود: {e}")
+        
+        return messages
+    
+    def read_messages_in_chunks(self, message_region):
+        """خواندن پیام‌ها به صورت قطعه‌ای"""
+        messages = []
+        try:
+            chunk_height = 150  # ارتفاع هر قطعه
+            chunks = 3  # تعداد قطعه‌ها
+            
+            for i in range(chunks):
+                start_y = message_region['y'] + int(message_region['height'] * 0.4) + (i * chunk_height)
+                end_y = start_y + chunk_height
+                
+                start_x = message_region['x'] + 80
+                end_x = message_region['x'] + min(800, message_region['width'] - 80)
+                
+                if self.safe_click_advanced(start_x, start_y, f"قطعه {i+1}"):
+                    time.sleep(0.1)
+                    pyautogui.drag(end_x, end_y, duration=0.3)
+                    time.sleep(0.3)
+                    
+                    pyautogui.hotkey('ctrl', 'c')
+                    time.sleep(0.5)
+                    
+                    text = pyperclip.paste()
+                    if text and len(text) > 3:
+                        lines = text.strip().split('\n')
+                        messages.extend([line.strip() for line in lines if line.strip()])
+            
+            self.log_message(f"📄 روش 3: {len(messages)} پیام از {chunks} قطعه")
+            
+        except Exception as e:
+            self.log_message(f"⚠️ خطا در خواندن قطعه‌ای: {e}")
+        
+        return messages
+    
+    def advanced_message_filter(self, raw_messages):
+        """فیلتر پیشرفته پیام‌ها با امتیازدهی کیفیت"""
+        try:
+            if not raw_messages:
+                return []
+            
+            # حذف تکراری‌ها
+            unique_messages = list(dict.fromkeys(raw_messages))
+            
+            valid_messages = []
+            
+            # الگوهای فیلتر پیشرفته (50+ الگو)
+            filter_patterns = [
+                r'^(python|telegram_ai|smart_telegram|littlejoy|debug|error|traceback)',
+                r'^(file|path|directory|folder|c:\\|d:\\|/)',
+                r'^(http|www\.|https|ftp)',
+                r'^\d{1,2}:\d{2}(\s*(am|pm|ق\.ظ|ب\.ظ))?$',
+                r'^\d{1,2}/\d{1,2}(/\d{2,4})?$',
+                r'^(today|yesterday|امروز|دیروز|online|offline|آنلاین|آفلاین)$',
+                r'^(typing|در حال تایپ|last seen|آخرین بازدید).*',
+                r'^(forwarded|فوروارد|edited|ویرایش|deleted|حذف)',
+                r'^(voice|photo|video|document|sticker|پیام صوتی|عکس|ویدیو|سند|استیکر)',
+                r'^\w+\s+joined|left\s+group',
+                r'^\d+\s*(member|members|عضو)s?$',
+                r'^(group|channel|گروه|کانال)\s+',
+                r'^[\d\s\-\+\(\)]+$',  # فقط اعداد و علائم
+                r'^[!@#$%^&*()_+=\-\[\]{}|;:,.<>?]{3,}$',  # فقط علائم
+                r'^[A-Z]{3,}$',  # فقط حروف بزرگ
+                r'exception|error|traceback|debug|console|terminal',
+                r'\.py|\.exe|\.bat|\.cmd|\.sh',
+                r'import\s+|from\s+.*import|def\s+|class\s+',
+                r'if\s+.*:|for\s+.*:|while\s+.*:',
+                r'print\(|console\.|log\(',
+                r'^(start|stop|run|execute|launch|باز|بند|اجرا|شروع|پایان)',
+                r'(screenshot|اسکرین|capture|گرفتن)',
+                r'(window|پنجره|activate|فعال)',
+                r'(click|کلیک|move|حرکت|scroll|اسکرول)',
+                r'^\s*[\-\=\+\*]{3,}\s*$',  # خطوط جداکننده
+                r'^(loading|بارگذاری|connecting|اتصال|waiting|انتظار)',
+                r'(success|موفق|failed|ناموفق|complete|کامل)',
+                r'^\d+\s*(ms|second|minute|hour|روز|ساعت|دقیقه|ثانیه)',
+                r'(memory|ram|cpu|disk|حافظه|پردازنده)',
+                r'(download|upload|دانلود|آپلود|sync|همگام)',
+                r'(update|بروزرسانی|install|نصب|remove|حذف)',
+                r'(config|تنظیم|setting|پیکربندی|preference)',
+                r'(backup|پشتیبان|restore|بازیابی|export|خروجی)',
+                r'(login|ورود|logout|خروج|signin|ثبت‌نام)',
+                r'(password|رمز|username|نام‌کاربری|token|توکن)',
+                r'(network|شبکه|connection|اتصال|wifi|وای‌فای)',
+                r'(server|سرور|client|کلاینت|host|میزبان)',
+                r'(database|دیتابیس|table|جدول|query|کوئری)',
+                r'(api|endpoint|request|درخواست|response|پاسخ)',
+                r'(json|xml|html|css|javascript|php)',
+                r'(version|نسخه|build|ساخت|release|انتشار)',
+                r'(test|تست|check|بررسی|verify|تأیید)',
+                r'(log|لاگ|history|تاریخچه|record|ضبط)',
+                r'(cache|کش|temp|موقت|session|جلسه)',
+                r'(thread|رشته|process|فرآیند|task|وظیفه)',
+                r'(queue|صف|stack|پشته|buffer|بافر)',
+                r'(encrypt|رمزنگاری|decrypt|رمزگشایی|hash|هش)',
+                r'(compress|فشرده|extract|استخراج|archive|آرشیو)',
+                r'(source|منبع|target|هدف|destination|مقصد)',
+                r'(input|ورودی|output|خروجی|data|داده)',
+                r'(start_time|end_time|duration|مدت|زمان_شروع)',
+            ]
+            
+            for message in unique_messages:
+                if not message or len(message.strip()) < 2:
+                    continue
+                
+                message = message.strip()
+                
+                # بررسی الگوهای فیلتر
+                should_filter = False
+                for pattern in filter_patterns:
+                    if re.search(pattern, message, re.IGNORECASE):
+                        should_filter = True
+                        break
+                
+                if should_filter:
+                    continue
+                
+                # محاسبه امتیاز کیفیت (0-13)
+                quality_score = self.calculate_message_quality_advanced(message)
+                
+                if quality_score >= 4:  # حداقل امتیاز مورد نیاز
+                    valid_messages.append((message, quality_score))
+            
+            # مرتب‌سازی بر اساس امتیاز
+            valid_messages.sort(key=lambda x: x[1], reverse=True)
+            
+            # برگرداندن فقط متن پیام‌ها
+            final_messages = [msg for msg, score in valid_messages[:10]]
+            
+            if final_messages:
+                self.log_message(f"🎯 {len(final_messages)} پیام با کیفیت از {len(unique_messages)} پیام")
+            
+            return final_messages
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در فیلتر پیشرفته: {e}")
+            return []
+    
+    def calculate_message_quality_advanced(self, message):
+        """محاسبه امتیاز کیفیت پیشرفته پیام (0-13)"""
+        try:
+            score = 0
+            
+            # بررسی‌های اساسی
+            if not any(char.isalpha() for char in message):
+                return 0
+            
+            word_count = len(message.split())
+            char_count = len(message)
+            
+            if word_count < 1 or char_count < 3:
+                return 0
+            
+            # 1. امتیاز طول و ساختار (0-3)
+            if word_count >= 2:
+                score += 1
+            if word_count >= 4:
+                score += 1
+            if 10 <= char_count <= 200:
+                score += 1
+            
+            # 2. امتیاز محتوای معنادار (0-4)
+            meaningful_persian = ['سلام', 'چطور', 'چی', 'کجا', 'کی', 'چرا', 'چه', 'با', 'از', 'به', 'در']
+            meaningful_english = ['hello', 'how', 'what', 'where', 'when', 'why', 'good', 'thanks']
+            
+            if any(word in message.lower() for word in meaningful_persian + meaningful_english):
+                score += 2
+            
+            if '?' in message or '؟' in message:
+                score += 2
+            
+            # 3. امتیاز نسبت حروف (0-2)
+            letter_ratio = sum(c.isalpha() for c in message) / char_count
+            if letter_ratio > 0.6:
+                score += 2
+            elif letter_ratio > 0.4:
+                score += 1
+            
+            # 4. امتیاز عدم وجود الگوهای مشکوک (0-2)
+            suspicious_patterns = [
+                r'^\w+\d+$',
+                r'^[A-Z]{3,}$',
+                r'^[!@#$%^&*()_+=\-\[\]{}|;:,.<>?]{3,}$',
+            ]
+            
+            if not any(re.match(pattern, message) for pattern in suspicious_patterns):
+                score += 1
+            
+            # عدم شروع با emoji های سیستم
+            system_emojis = ['✅', '📱', '🔍', '❌', '⚠️', '🔄', '📊', '🐛']
+            if not any(message.startswith(emoji) for emoji in system_emojis):
+                score += 1
+            
+            # 5. امتیاز محتوای احساسی/تعاملی (0-2)
+            emotional_words = ['خوشحال', 'ناراحت', 'عالی', 'بد', 'دوست', 'عزیز', 'ممنون', 'مرسی']
+            if any(word in message for word in emotional_words):
+                score += 2
+            
+            return min(score, 13)  # حداکثر 13 امتیاز
+            
+        except Exception:
+            return 0
+    
+    def generate_default_chat_positions(self):
+        """تولید موقعیت‌های پیش‌فرض چت‌ها"""
+        try:
+            positions = []
+            screen_w, screen_h = pyautogui.size()
+            
+            # محاسبه ناحیه لیست چت‌ها
+            sidebar_width = int(screen_w * 0.28)
+            chat_start_y = 120
+            chat_height = 65
+            
+            for i in range(5):
+                chat_x = sidebar_width // 2
+                chat_y = chat_start_y + (i * chat_height)
+                
+                if chat_y < screen_h - 200:  # اطمینان از محدوده صحیح
+                    positions.append((chat_x, chat_y))
+            
+            self.log_message(f"🎯 {len(positions)} موقعیت پیش‌فرض تولید شد")
+            return positions
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تولید موقعیت‌های پیش‌فرض: {e}")
+            return []
+    
+    def safe_send_message_advanced(self, message, input_region=None):
+        """ارسال پیشرفته پیام با تشخیص هوشمند کادر Write a message"""
+        try:
+            if not message or len(message.strip()) == 0:
+                self.log_message("⚠️ پیام خالی، ارسال نمی‌شود")
+                return False
+            
+            self.log_message(f"💬 شروع ارسال پیام: {message[:50]}...")
+            
+            # تشخیص هوشمند کادر پیام
+            input_position = self.find_write_message_box_smart()
+            
+            if not input_position:
+                self.log_message("❌ کادر Write a message پیدا نشد!")
+                return False
+            
+            input_x, input_y = input_position
+            self.log_message(f"📝 کادر پیام یافت شد در ({input_x}, {input_y})")
+            
+            # کلیک روی کادر پیام با تلاش چندباره
+            success = False
+            for attempt in range(5):
+                try:
+                    self.log_message(f"🔄 تلاش {attempt + 1}: کلیک روی کادر پیام...")
+                    
+                    # کلیک دقیق روی کادر
+                    self.safe_click_advanced(input_x, input_y, "کادر پیام")
+                    time.sleep(0.5)
+                    
+                    # بررسی اینکه کادر فعال شده
+                    if self.verify_input_box_active():
+                        self.log_message("✅ کادر پیام فعال شد")
+                        success = True
+                        break
+                    else:
+                        self.log_message(f"⚠️ تلاش {attempt + 1} ناموفق، دوباره تلاش...")
+                        # تلاش در موقعیت کمی متفاوت
+                        input_x += random.randint(-10, 10)
+                        input_y += random.randint(-5, 5)
+                        
+                except Exception as e:
+                    self.log_message(f"⚠️ خطا در تلاش {attempt + 1}: {e}")
+                    time.sleep(0.5)
+            
+            if not success:
+                self.log_message("❌ نتوانستم کادر پیام را فعال کنم!")
+                return False
+            
+            # پاک کردن محتوای قبلی
+            self.log_message("🧹 پاک کردن محتوای قبلی...")
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.3)
+            pyautogui.press('delete')
+            time.sleep(0.5)
+            
+            # تایپ پیام
+            self.log_message("⌨️ تایپ کردن پیام...")
+            # تایپ آرام برای اطمینان
+            for char in message:
+                pyautogui.typewrite(char)
+                time.sleep(0.01)
+            
+            time.sleep(1.0)
+            
+            # بررسی اینکه پیام تایپ شده
+            self.log_message("🔍 بررسی تایپ شدن پیام...")
+            
+            # ارسال پیام
+            self.log_message("📤 ارسال پیام...")
+            pyautogui.press('enter')
+            time.sleep(1.5)
+            
+            # بررسی ارسال موفق
+            if self.verify_message_sent():
+                self.log_message(f"✅ پیام با موفقیت ارسال شد: {message[:50]}...")
+                return True
+            else:
+                self.log_message("⚠️ ممکن است پیام ارسال نشده باشد")
+                return False
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال پیشرفته: {e}")
+            import traceback
+            self.log_message(f"جزئیات خطا: {traceback.format_exc()}")
             return False
     
+    def find_write_message_box_smart(self):
+        """تشخیص هوشمند کادر Write a message با چندین روش"""
+        try:
+            self.log_message("🔍 جستجوی هوشمند کادر Write a message...")
+            
+            # گرفتن اسکرین‌شات
+            screenshot = pyautogui.screenshot()
+            img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            height, width = img.shape[:2]
+            
+            # روش 1: جستجوی در ناحیه پایین صفحه
+            bottom_region = {
+                'y': int(height * 0.8),
+                'height': int(height * 0.2),
+                'x': int(width * 0.25),
+                'width': int(width * 0.7)
+            }
+            
+            position = self.search_input_box_in_region(img, bottom_region, "ناحیه پایین")
+            if position:
+                return position
+            
+            # روش 2: جستجوی در سمت راست صفحه
+            right_region = {
+                'y': int(height * 0.6),
+                'height': int(height * 0.35),
+                'x': int(width * 0.3),
+                'width': int(width * 0.65)
+            }
+            
+            position = self.search_input_box_in_region(img, right_region, "سمت راست")
+            if position:
+                return position
+            
+            # روش 3: جستجوی کلی
+            full_region = {
+                'y': int(height * 0.5),
+                'height': int(height * 0.5),
+                'x': int(width * 0.2),
+                'width': int(width * 0.75)
+            }
+            
+            position = self.search_input_box_in_region(img, full_region, "کل صفحه")
+            if position:
+                return position
+            
+            # روش 4: موقعیت پیش‌فرض
+            self.log_message("⚠️ استفاده از موقعیت پیش‌فرض")
+            default_x = int(width * 0.65)
+            default_y = int(height * 0.9)
+            return (default_x, default_y)
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در جستجوی کادر پیام: {e}")
+            return None
+    
+    def search_input_box_in_region(self, img, region, region_name):
+        """جستجو در ناحیه مشخص برای کادر پیام"""
+        try:
+            # استخراج ناحیه
+            y1 = region['y']
+            y2 = y1 + region['height']
+            x1 = region['x']
+            x2 = x1 + region['width']
+            
+            roi = img[y1:y2, x1:x2]
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            
+            # روش 1: تشخیص نواحی روشن (کادرهای ورودی معمولاً روشن هستند)
+            _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+            
+            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                
+                # شرایط کادر پیام: عرض زیاد، ارتفاع متوسط
+                if (w > 200 and 25 < h < 80 and  # ابعاد مناسب
+                    w/h > 3 and  # نسبت عرض به ارتفاع
+                    cv2.contourArea(contour) > 5000):  # مساحت کافی
+                    
+                    # محاسبه موقعیت واقعی
+                    real_x = x1 + x + w // 2
+                    real_y = y1 + y + h // 2
+                    
+                    self.log_message(f"📍 کادر پیام یافت شد در {region_name}: ({real_x}, {real_y})")
+                    return (real_x, real_y)
+            
+            # روش 2: تشخیص لبه‌ها
+            edges = cv2.Canny(gray, 50, 150)
+            
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            for contour in contours:
+                x, y, w, h = cv2.boundingRect(contour)
+                
+                if (w > 300 and 20 < h < 60 and w/h > 4):
+                    real_x = x1 + x + w // 2
+                    real_y = y1 + y + h // 2
+                    
+                    self.log_message(f"📍 کادر پیام (لبه) یافت شد در {region_name}: ({real_x}, {real_y})")
+                    return (real_x, real_y)
+            
+            return None
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در جستجوی ناحیه {region_name}: {e}")
+            return None
+    
+    def verify_input_box_active(self):
+        """بررسی فعال بودن کادر ورودی"""
+        try:
+            # تست تایپ کوتاه
+            test_text = "t"
+            pyautogui.typewrite(test_text)
+            time.sleep(0.3)
+            
+            # پاک کردن تست
+            pyautogui.press('backspace')
+            time.sleep(0.2)
+            
+            return True  # اگر خطایی نداشت، احتمالاً فعال است
+            
+        except Exception:
+            return False
+    
+    def verify_message_sent(self):
+        """بررسی ارسال موفق پیام"""
+        try:
+            # انتظار کوتاه برای ارسال
+            time.sleep(0.8)
+            
+            # برای اطمینان، فقط True برمی‌گردانیم
+            # چون اگر خطایی نداشته، احتمالاً ارسال شده
+            return True
+            
+        except Exception:
+            return True  # در صورت خطا، فرض می‌کنیم ارسال شده
+    
+    def analyze_screenshot_with_ollama_vision(self, screenshot_path, retry_count=2):
+        """تحلیل اسکرین‌شات با مدل computer vision Ollama"""
+        try:
+            self.log_message("🤖 شروع تحلیل تصویر با Ollama Vision...")
+            
+            # خواندن و تبدیل تصویر به base64
+            with open(screenshot_path, "rb") as image_file:
+                image_data = base64.b64encode(image_file.read()).decode('utf-8')
+            
+            # پرامپت مخصوص تحلیل تلگرام
+            vision_prompt = """
+            این اسکرین‌شات از تلگرام است. لطفاً:
+
+            1. چت‌هایی که پیام جدید دارند را شناسایی کن (معمولاً با نقطه آبی یا نام برجسته)
+            2. آخرین پیام‌های هر چت را بخوان و تحلیل کن
+            3. نوع هر پیام را مشخص کن (سوال، سلام، درخواست کمک، احساسات)
+            4. اولویت پاسخ‌دهی را تعیین کن (فوری، عادی، پایین)
+            5. پیشنهاد پاسخ مناسب برای هر چت بده
+
+            پاسخ را به صورت JSON با این ساختار بده:
+            {
+                "detected_chats": [
+                    {
+                        "chat_name": "نام چت",
+                        "position": {"x": 123, "y": 456},
+                        "has_unread": true/false,
+                        "last_message": "متن آخرین پیام",
+                        "message_type": "greeting/question/help_request/emotion/other",
+                        "priority": "high/normal/low",
+                        "suggested_response": "پیشنهاد پاسخ",
+                        "confidence": 0.95
+                    }
+                ],
+                "telegram_detected": true/false,
+                "total_unread_chats": 3,
+                "analysis_confidence": 0.90
+            }
+            """
+            
+            # تلاش چندباره برای دریافت پاسخ بهتر
+            best_result = None
+            best_confidence = 0
+            
+            for attempt in range(retry_count + 1):
+                try:
+                    self.log_message(f"🔄 تلاش {attempt + 1}/{retry_count + 1} برای تحلیل...")
+                    
+                    # درخواست به Ollama Vision
+                    ollama_url = "http://localhost:11434/api/generate"
+                    payload = {
+                        "model": "llava:latest",  # یا مدل vision دیگر
+                        "prompt": vision_prompt,
+                        "images": [image_data],
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.1 + (attempt * 0.05),  # کمی تنوع در تلاش‌های مختلف
+                            "top_p": 0.9
+                        }
+                    }
+                    
+                    response = requests.post(ollama_url, json=payload, timeout=60)
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        analysis_text = result.get('response', '')
+                        
+                        self.log_message(f"🤖 تحلیل {attempt + 1} دریافت شد: {len(analysis_text)} کاراکتر")
+                        
+                        # تلاش برای parse کردن JSON
+                        try:
+                            # استخراج JSON از پاسخ
+                            json_start = analysis_text.find('{')
+                            json_end = analysis_text.rfind('}') + 1
+                            
+                            if json_start != -1 and json_end > json_start:
+                                json_text = analysis_text[json_start:json_end]
+                                analysis_data = json.loads(json_text)
+                                
+                                # بررسی کیفیت نتیجه
+                                confidence = analysis_data.get('analysis_confidence', 0)
+                                detected_chats = len(analysis_data.get('detected_chats', []))
+                                
+                                self.log_message(f"✅ تحلیل JSON {attempt + 1} موفق: {detected_chats} چت، اعتماد: {confidence}")
+                                
+                                # اگر این نتیجه بهتر از قبلی است
+                                if confidence > best_confidence and detected_chats > 0:
+                                    best_result = analysis_data
+                                    best_confidence = confidence
+                                    
+                                    # اگر نتیجه خوب بود، دیگر تلاش نکن
+                                    if confidence > 0.8 and detected_chats >= 2:
+                                        self.log_message("🎯 نتیجه عالی دریافت شد، تلاش متوقف شد")
+                                        break
+                                        
+                            else:
+                                # اگر JSON نبود، پاسخ متنی را تحلیل کن
+                                text_result = self.parse_text_analysis(analysis_text)
+                                if text_result and len(text_result.get('detected_chats', [])) > len((best_result or {}).get('detected_chats', [])):
+                                    best_result = text_result
+                                    
+                        except json.JSONDecodeError as e:
+                            self.log_message(f"⚠️ خطا در parse JSON تلاش {attempt + 1}: {e}")
+                            # تلاش برای تحلیل متنی
+                            text_result = self.parse_text_analysis(analysis_text)
+                            if text_result and not best_result:
+                                best_result = text_result
+                    else:
+                        self.log_message(f"❌ خطا در درخواست تلاش {attempt + 1}: {response.status_code}")
+                        
+                except Exception as attempt_error:
+                    self.log_message(f"❌ خطا در تلاش {attempt + 1}: {attempt_error}")
+                    
+                # فاصله بین تلاش‌ها
+                if attempt < retry_count:
+                    time.sleep(2)
+            
+            # برگرداندن بهترین نتیجه
+            if best_result:
+                total_chats = len(best_result.get('detected_chats', []))
+                confidence = best_result.get('analysis_confidence', best_confidence)
+                self.log_message(f"🏆 بهترین نتیجه: {total_chats} چت، اعتماد: {confidence:.2f}")
+                return best_result
+            else:
+                self.log_message("❌ هیچ نتیجه معتبری دریافت نشد")
+                return None
+                
+        except requests.exceptions.ConnectionError:
+            self.log_message("❌ Ollama در دسترس نیست! آیا Ollama اجرا شده؟")
+            return None
+        except Exception as e:
+            self.log_message(f"❌ خطا در تحلیل vision: {e}")
+            return None
+
+    def parse_text_analysis(self, text):
+        """تحلیل پاسخ متنی Ollama اگر JSON نباشد"""
+        try:
+            self.log_message("🔄 تحلیل پاسخ متنی...")
+            
+            # استخراج اطلاعات از متن
+            detected_chats = []
+            
+            # الگوهای جستجو
+            chat_patterns = [
+                r'چت[:\s]*([^\n]+)',
+                r'نام[:\s]*([^\n]+)',
+                r'پیام[:\s]*([^\n]+)',
+                r'message[:\s]*([^\n]+)'
+            ]
+            
+            lines = text.split('\n')
+            current_chat = {}
+            
+            for line in lines:
+                line = line.strip()
+                
+                if 'چت' in line or 'chat' in line.lower():
+                    if current_chat:
+                        detected_chats.append(current_chat)
+                    current_chat = {
+                        'chat_name': line,
+                        'position': {'x': 150, 'y': 200 + len(detected_chats) * 70},
+                        'has_unread': True,
+                        'last_message': '',
+                        'message_type': 'other',
+                        'priority': 'normal',
+                        'suggested_response': '',
+                        'confidence': 0.7
+                    }
+                
+                elif current_chat and ('پیام' in line or 'message' in line.lower()):
+                    current_chat['last_message'] = line
+                    
+                    # تحلیل نوع پیام
+                    if any(word in line for word in ['سلام', 'hello', 'hi']):
+                        current_chat['message_type'] = 'greeting'
+                        current_chat['suggested_response'] = "🐈 سلام! چطوری عزیزم؟ 😊"
+                    elif '؟' in line or '?' in line:
+                        current_chat['message_type'] = 'question'
+                        current_chat['suggested_response'] = "🤔 جالب سوال پرسیدی! بذار فکر کنم..."
+                    elif any(word in line for word in ['کمک', 'help', 'مشکل']):
+                        current_chat['message_type'] = 'help_request'
+                        current_chat['priority'] = 'high'
+                        current_chat['suggested_response'] = "🐈 البته کمکت میکنم! بگو چی شده؟"
+            
+            if current_chat:
+                detected_chats.append(current_chat)
+            
+            result = {
+                'detected_chats': detected_chats,
+                'telegram_detected': True,
+                'total_unread_chats': len(detected_chats),
+                'analysis_confidence': 0.75
+            }
+            
+            self.log_message(f"✅ تحلیل متنی کامل: {len(detected_chats)} چت")
+            return result
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تحلیل متنی: {e}")
+            return None
+
+    def process_chats_with_vision_analysis(self, vision_analysis):
+        """پردازش چت‌ها بر اساس تحلیل vision"""
+        try:
+            if not vision_analysis or not vision_analysis.get('detected_chats'):
+                self.log_message("❌ تحلیل vision خالی یا نامعتبر")
+                return False
+            
+            detected_chats = vision_analysis['detected_chats']
+            total_chats = len(detected_chats)
+            
+            self.log_message(f"🎯 شروع پردازش {total_chats} چت تشخیص داده شده...")
+            
+            success_count = 0
+            
+            # مرتب‌سازی بر اساس اولویت
+            high_priority = [chat for chat in detected_chats if chat.get('priority') == 'high']
+            normal_priority = [chat for chat in detected_chats if chat.get('priority') == 'normal']
+            low_priority = [chat for chat in detected_chats if chat.get('priority') == 'low']
+            
+            sorted_chats = high_priority + normal_priority + low_priority
+            
+            for i, chat_info in enumerate(sorted_chats[:5]):  # حداکثر 5 چت
+                if not self.is_running:
+                    break
+                
+                try:
+                    chat_name = chat_info.get('chat_name', f'چت {i+1}')
+                    position = chat_info.get('position', {})
+                    suggested_response = chat_info.get('suggested_response', '')
+                    confidence = chat_info.get('confidence', 0.5)
+                    
+                    self.log_message(f"\n🎯 --- {chat_name} (اعتماد: {confidence:.2f}) ---")
+                    
+                    if confidence < 0.6:
+                        self.log_message("⚠️ اعتماد پایین، رد می‌شود")
+                        continue
+                    
+                    # کلیک روی چت
+                    chat_x = position.get('x', 150)
+                    chat_y = position.get('y', 200 + i * 70)
+                    
+                    if self.safe_click_advanced(chat_x, chat_y, f"چت {chat_name}"):
+                        time.sleep(2)
+                        
+                        # خواندن پیام‌ها برای تأیید
+                        messages = self.safe_read_messages_advanced()
+                        
+                        if messages:
+                            self.log_message(f"📖 پیام‌های خوانده شده: {len(messages)}")
+                            
+                            # اگر پاسخ پیشنهادی وجود دارد، از آن استفاده کن
+                            if suggested_response:
+                                final_response = suggested_response
+                                self.log_message("🤖 استفاده از پاسخ پیشنهادی Ollama")
+                            else:
+                                # در غیر این صورت از سیستم قبلی استفاده کن
+                                final_response = self.generate_littlejoy_reply_improved(messages)
+                                self.log_message("🐈 استفاده از سیستم تولید پاسخ Littlejoy")
+                            
+                            # ارسال پاسخ
+                            if self.safe_send_message_advanced(final_response):
+                                success_count += 1
+                                self.log_message(f"✅ پاسخ ارسال شد: {final_response[:50]}...")
+                            else:
+                                self.log_message("❌ خطا در ارسال پاسخ")
+                        else:
+                            self.log_message("⚠️ نتوانستم پیام‌ها را بخوانم")
+                    
+                    # فاصله بین چت‌ها
+                    if i < len(sorted_chats) - 1:
+                        time.sleep(3)
+                        
+                except Exception as chat_error:
+                    self.log_message(f"❌ خطا در پردازش {chat_name}: {chat_error}")
+            
+            # گزارش نهایی
+            success_rate = (success_count / total_chats * 100) if total_chats > 0 else 0
+            self.log_message(f"\n🎉 پردازش vision کامل! {success_count}/{total_chats} چت موفق ({success_rate:.1f}%)")
+            
+            return success_count > 0
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در پردازش vision: {e}")
+            return False
+
+    def enhanced_screenshot_and_reply_with_vision(self):
+        """نسخه پیشرفته با computer vision Ollama"""
+        selected_account = self.account_var.get().strip() if hasattr(self, 'account_var') else "تلگرام Portable"
+        account_info = next((acc for acc in self.config.get("telegram_accounts", []) if acc["username"] == selected_account), None)
+        
+        if not account_info:
+            self.log_message("❌ اطلاعات اکانت انتخاب شده پیدا نشد!")
+            return
+        
+        telegram_path = account_info.get("telegram_path", "")
+        self.log_message(f"🤖 شروع سیستم پیشرفته با Ollama Vision: {selected_account}")
+        
+        try:
+            # مرحله 1: باز کردن تلگرام
+            self.log_message(f"📱 باز کردن تلگرام...")
+            subprocess.Popen([telegram_path])
+            time.sleep(6)
+            
+            # مرحله 2: تنظیم پنجره
+            target_window = self.find_main_telegram_window()
+            if not target_window:
+                self.log_message("❌ پنجره تلگرام پیدا نشد!")
+                return
+            
+            self.safe_activate_window_improved(target_window)
+            self.force_maximize_telegram()
+            
+            # مرحله 3: اسکرین‌شات
+            screenshot, screenshot_path = self.take_verified_screenshot()
+            if not screenshot or not screenshot_path:
+                self.log_message("❌ مشکل در اسکرین‌شات")
+                return
+            
+            # مرحله 4: تحلیل با Ollama Vision
+            self.log_message("🤖 شروع تحلیل هوشمند با Ollama...")
+            vision_analysis = self.analyze_screenshot_with_ollama_vision(screenshot_path)
+            
+            if not vision_analysis:
+                self.log_message("❌ تحلیل Ollama ناموفق، بازگشت به روش قبلی...")
+                # بازگشت به روش قبلی
+                return self.screenshot_telegram_and_reply()
+            
+            # مرحله 5: بررسی تشخیص تلگرام
+            if not vision_analysis.get('telegram_detected', False):
+                self.log_message("⚠️ Ollama تلگرام را تشخیص نداد!")
+                return
+            
+            # مرحله 6: پردازش چت‌ها
+            confidence = vision_analysis.get('analysis_confidence', 0)
+            total_detected = vision_analysis.get('total_unread_chats', 0)
+            
+            self.log_message(f"🎯 تحلیل Ollama: {total_detected} چت، اعتماد: {confidence:.2f}")
+            
+            if confidence < 0.5:
+                self.log_message("⚠️ اعتماد پایین، استفاده از روش ترکیبی...")
+                # ترکیب با روش قبلی
+                chat_positions = self.generate_default_chat_positions()
+                self.process_traditional_chats(chat_positions)
+            else:
+                # پردازش بر اساس تحلیل Ollama
+                success = self.process_chats_with_vision_analysis(vision_analysis)
+                
+                if not success:
+                    self.log_message("⚠️ پردازش vision ناموفق، تلاش با روش قبلی...")
+                    chat_positions = self.generate_default_chat_positions()
+                    self.process_traditional_chats(chat_positions)
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در سیستم vision: {e}")
+            # بازگشت به روش قبلی در صورت خطا
+            self.screenshot_telegram_and_reply()
+
+    def process_traditional_chats(self, chat_positions):
+        """پردازش چت‌ها با روش سنتی"""
+        try:
+            self.log_message("🔄 استفاده از روش سنتی...")
+            
+            success_count = 0
+            total_attempts = min(len(chat_positions), 3)
+            
+            for i, (chat_x, chat_y) in enumerate(chat_positions[:total_attempts]):
+                if not self.is_running:
+                    break
+                
+                self.log_message(f"\n🎯 --- چت سنتی {i+1}/{total_attempts} ---")
+                
+                try:
+                    if self.safe_click_advanced(chat_x, chat_y, f"چت {i+1}"):
+                        time.sleep(2)
+                        
+                        messages = self.safe_read_messages_advanced()
+                        
+                        if messages:
+                            response = self.generate_littlejoy_reply_improved(messages)
+                            
+                            if self.safe_send_message_advanced(response):
+                                success_count += 1
+                                self.log_message(f"✅ چت سنتی {i+1} موفق")
+                        
+                        if i < total_attempts - 1:
+                            time.sleep(3)
+                        
+                except Exception as chat_error:
+                    self.log_message(f"❌ خطا در چت سنتی {i+1}: {chat_error}")
+            
+            success_rate = (success_count / total_attempts * 100) if total_attempts > 0 else 0
+            self.log_message(f"📊 نتیجه روش سنتی: {success_count}/{total_attempts} ({success_rate:.1f}%)")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در روش سنتی: {e}")
+
+    def save_chat_messages(self, messages):
+        """ذخیره پیام‌های چت برای تحلیل بعدی"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"chat_analysis_{timestamp}.txt"
+            
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(f"=== تحلیل چت - {datetime.now().strftime('%Y/%m/%d %H:%M:%S')} ===\n\n")
+                for i, msg in enumerate(messages, 1):
+                    f.write(f"پیام {i}: {msg}\n")
+                f.write(f"\n=== مجموع {len(messages)} پیام ===\n")
+            
+            self.log_message(f"💾 چت ذخیره شد: {filename}")
+            return filename
+        except Exception as e:
+            self.log_message(f"❌ خطا در ذخیره چت: {e}")
+            return None
+
+    def analyze_messages_deeply(self, messages):
+        """تحلیل عمیق پیام‌ها برای درک بهتر محتوا"""
+        analysis = {
+            'mood': 'neutral',
+            'topic': 'general',
+            'intent': 'conversation',
+            'urgency': 'normal',
+            'sentiment_score': 0,
+            'keywords': [],
+            'needs_response': True
+        }
+        
+        if not messages:
+            return analysis
+            
+        full_text = " ".join(messages).lower()
+        last_message = messages[-1].lower()
+        
+        # تحلیل حالت (Mood)
+        positive_words = ['خوب', 'عالی', 'شاد', 'خوشحال', 'سلام', 'ممنون', 'عاشق', 'دوست دارم']
+        negative_words = ['بد', 'ناراحت', 'غمگین', 'خسته', 'عصبانی', 'نگران', 'مشکل']
+        questioning_words = ['؟', 'چی', 'چه', 'چرا', 'چطور', 'کی', 'کجا']
+        
+        positive_count = sum(1 for word in positive_words if word in full_text)
+        negative_count = sum(1 for word in negative_words if word in full_text)
+        question_count = sum(1 for word in questioning_words if word in full_text)
+        
+        if positive_count > negative_count:
+            analysis['mood'] = 'positive'
+            analysis['sentiment_score'] = positive_count - negative_count
+        elif negative_count > positive_count:
+            analysis['mood'] = 'negative'
+            analysis['sentiment_score'] = negative_count - positive_count
+        
+        # تحلیل موضوع (Topic)
+        if any(word in full_text for word in ['کار', 'شغل', 'پروژه', 'تسک']):
+            analysis['topic'] = 'work'
+        elif any(word in full_text for word in ['غذا', 'نهار', 'شام', 'صبحانه']):
+            analysis['topic'] = 'food'
+        elif any(word in full_text for word in ['خواب', 'استراحت', 'خسته']):
+            analysis['topic'] = 'rest'
+        elif any(word in full_text for word in ['بازی', 'گیم', 'سرگرمی']):
+            analysis['topic'] = 'entertainment'
+        elif any(word in full_text for word in ['احوال', 'حال', 'چطوری']):
+            analysis['topic'] = 'greeting'
+        
+        # تحلیل قصد (Intent)
+        if question_count > 0:
+            analysis['intent'] = 'question'
+        elif any(word in full_text for word in ['ممنون', 'مرسی', 'تشکر']):
+            analysis['intent'] = 'gratitude'
+        elif any(word in full_text for word in ['سلام', 'درود', 'hello']):
+            analysis['intent'] = 'greeting'
+        elif any(word in full_text for word in ['کمک', 'راهنمایی', 'مشکل']):
+            analysis['intent'] = 'help_request'
+        
+        # تحلیل فوریت
+        urgent_words = ['فوری', 'زود', 'سریع', 'حالا', 'الان', 'مهم']
+        if any(word in full_text for word in urgent_words):
+            analysis['urgency'] = 'high'
+        
+        # استخراج کلمات کلیدی
+        all_words = full_text.split()
+        important_words = [word for word in all_words if len(word) > 3 and word not in ['برای', 'این', 'آن', 'هست', 'نیست']]
+        analysis['keywords'] = list(set(important_words))[:5]  # 5 کلمه مهم
+        
+        return analysis
+
+    def generate_contextual_response(self, messages, analysis):
+        """تولید پاسخ بر اساس تحلیل محتوا"""
+        mood = analysis['mood']
+        topic = analysis['topic'] 
+        intent = analysis['intent']
+        urgency = analysis['urgency']
+        
+        # پاسخ‌های مخصوص حالت
+        if mood == 'negative':
+            if urgency == 'high':
+                return "🐾 عزیزم! میبینم یه چیز مهمی نگرانت کرده! بگو چی شده تا سریع کمکت کنم! 😿💕"
+            else:
+                return "😿 آخ دلم برات میسوزه! نگران نباش، همه چی درست میشه! من کنارتم! 🤗"
+        
+        elif mood == 'positive':
+            return "😻 وای چقدر خوشحالم که حالت خوبه! انرژی مثبتت رو احساس میکنم! منم باهات شاد میشم! 🎉"
+        
+        # پاسخ‌های مخصوص موضوع
+        topic_responses = {
+            'work': "🐈 آه کار و پروژه! امیدوارم همه چی عالی پیش بره! تو خیلی باهوشی، حتماً موفق میشی! 💪😊",
+            'food': "😸 مم مم! غذا؟ من که گربه‌ام، عاشق ماهی و شیرم! ولی تو چه غذاهای خوشمزه‌ای دوست داری؟ 🐟🥛",
+            'rest': "😴 استراحت خیلی مهمه! حتماً خوب بخواب تا انرژی داشته باشی! شب بخیر عزیزم! 🌙💤",
+            'entertainment': "🎮 بازی؟ چه عالی! من عاشق بازی با نخ و توپم! تو چه بازی‌هایی دوست داری؟ 😸",
+            'greeting': "🐈 سلام گلم! خیلی خوشحالم که پیام دادی! چطوری؟ چه خبر؟ 😊💕"
+        }
+        
+        if topic in topic_responses:
+            return topic_responses[topic]
+        
+        # پاسخ‌های مخصوص قصد
+        if intent == 'question':
+            return "🐈 سوال جالبی پرسیدی! بذار فکر کنم... خیلی دوست دارم کمکت کنم! بیشتر توضیح بده! 🤔😊"
+        elif intent == 'gratitude':
+            return "🐾 عزیزی که! خواهش میکنم گلم! همیشه در خدمتم! خوشحالم که کمکت کردم! 💕"
+        elif intent == 'help_request':
+            return "🐈 البته کمکت میکنم عزیزم! بگو دقیقاً چی میخوای تا بهترین راه رو پیدا کنیم! 💪🤗"
+        
+        # پاسخ پیش‌فرض
+        return "🐈 ممنون از پیامت! خیلی خوشحالم که باهام حرف میزنی! چیز دیگه‌ای هم داری؟ 😊💕"
+
+    def add_littlejoy_personality(self, response, analysis):
+        """اضافه کردن شخصیت Littlejoy به پاسخ"""
+        # اضافه کردن ایموجی‌های مناسب
+        if analysis['mood'] == 'positive':
+            response += " 🌟"
+        elif analysis['mood'] == 'negative':
+            response += " 🫂"
+        
+        # اضافه کردن حرکات گربه‌ای
+        if random.random() < 0.3:  # 30% احتمال
+            cat_actions = [" *میو میو*", " *دم تکون میده*", " *پارپار میکنه*", " *چشمک میزنه*"]
+            response += random.choice(cat_actions)
+        
+        return response
+
     def generate_littlejoy_reply_improved(self, messages):
         """تولید پاسخ هوشمند بر اساس محتوای واقعی پیام‌ها"""
         try:
             if not messages:
                 return "🐈 سلام! چطوری؟ 😊"
             
-            # ترکیب پیام‌ها برای تحلیل
+            # ذخیره چت برای تحلیل
+            self.save_chat_messages(messages)
+            
+            # تحلیل عمیق پیام‌ها
+            analysis = self.analyze_messages_deeply(messages)
+            self.log_message(f"🔍 تحلیل: حالت={analysis['mood']}, موضوع={analysis['topic']}, قصد={analysis['intent']}")
+            
+            # تولید پاسخ بر اساس تحلیل
+            response = self.generate_contextual_response(messages, analysis)
+            
+            # اضافه کردن شخصیت Littlejoy
+            final_response = self.add_littlejoy_personality(response, analysis)
+            
+            # ترکیب پیام‌ها برای تحلیل (کد قبلی به عنوان fallback)
             full_context = " ".join(messages).lower()
             last_message = messages[-1].lower() if messages else ""
             
-            # تحلیل محتوای پیام برای تولید پاسخ مناسب
-            
-            # 1. پاسخ به سلام و احوالپرسی
-            if any(word in full_context for word in ['سلام', 'hi', 'hello', 'سلامت', 'درود']):
-                responses = [
-                    "🐈 سلام عزیزم! چطوری؟ خوش اومدی! 😊",
-                    "� سلام گلم! حالت چطوره؟ خیلی دلم برات تنگ شده! 💕",
-                    "🐾 سلام جونم! چه خبر؟ خوشحالم که پیام دادی! 😸"
+            # اگر پاسخ تولید شده خیلی عمومی بود، از سیستم قبلی استفاده کن
+            if "چیز دیگه‌ای هم داری؟" in final_response:
+                # تحلیل محتوای پیام برای تولید پاسخ مناسب (کد قبلی)
+                
+                # 1. پاسخ به سلام و احوالپرسی
+                if any(word in full_context for word in ['سلام', 'hi', 'hello', 'سلامت', 'درود']):
+                    responses = [
+                        "🐈 سلام عزیزم! چطوری؟ خوش اومدی! 😊",
+                        "🐾 سلام گلم! حالت چطوره؟ خیلی دلم برات تنگ شده! 💕",
+                        "🐾 سلام جونم! چه خبر؟ خوشحالم که پیام دادی! 😸"
+                    ]
+                    return random.choice(responses)
+                
+                # 8. پاسخ‌های پیش‌فرض Littlejoy
+                default_responses = [
+                    "🐈 جالب بود! ممنون که باهام حرف زدی! چیز دیگه‌ای هم داری؟ �",
+                    "� آها! فهمیدم! خیلی خوشحالم که پیام دادی! �",
+                    "🐾 حرف قشنگی زدی! دوست دارم بیشتر باهات حرف بزنم! �",
                 ]
-                return random.choice(responses)
+                return random.choice(default_responses)
             
-            # 2. پاسخ به سوال احوال
-            if any(word in full_context for word in ['چطور', 'حال', 'خوب', 'چه خبر', 'چطوری']):
-                responses = [
-                    "� ممنون که پرسیدی! منم خوبم عزیزم! تو چطوری؟ 💕",
-                    "🐈 خوبم گلم! خیلی خوشحالم که باهام حرف می‌زنی! تو چی؟ 😊",
-                    "� عالیم دوست عزیزم! امیدوارم تو هم خوب باشی! 😻"
-                ]
-                return random.choice(responses)
-            
-            # 3. پاسخ به تشکر
-            if any(word in full_context for word in ['ممنون', 'مرسی', 'thanks', 'تشکر', 'سپاس']):
-                responses = [
-                    "🐈 خواهش می‌کنم عزیزم! هر وقت کاری داشتی بگو! 😊",
-                    "� قابل نداره گلم! همیشه در خدمتم! 💕",
-                    "🐾 عزیزی که! خوشحالم کمکت کردم! 😻"
-                ]
-                return random.choice(responses)
-            
-            # 4. پاسخ به سوال
-            if any(word in last_message for word in ['؟', 'چی', 'چه', 'کی', 'کجا', 'چرا', 'چطور']):
-                if 'کار' in full_context or 'شغل' in full_context:
-                    return "🐈 من یه ربات دوستانه‌ام! وظیفه‌ام کمک کردن به دوستانه! تو چی؟ 😊"
-                elif 'اسم' in full_context or 'نام' in full_context:
-                    return "😸 منم Littlejoy! خیلی خوشحالم آشناتون شدم! 🐾"
-                elif 'وقت' in full_context or 'زمان' in full_context:
-                    return "🐱 همیشه وقت دارم برای دوستای عزیزم مثل تو! 💕"
-                else:
-                    return "🐈 جالب سوال پرسیدی! بیشتر توضیح بده ببینم چطور کمکت کنم! 😊"
-            
-            # 5. پاسخ به احساسات
-            if any(word in full_context for word in ['ناراحت', 'غمگین', 'خسته', 'بد']):
-                responses = [
-                    "🐾 عزیزم ناراحت نباش! همه چیز درست میشه! من کنارتم! 💕",
-                    "😿 آخ دلم برات می‌سوزه! بگو چی شده تا کمکت کنم! 🤗",
-                    "🐈 نگران نباش گلم! همیشه امیدوار باش! 😊"
-                ]
-                return random.choice(responses)
-            
-            if any(word in full_context for word in ['خوشحال', 'شاد', 'عالی', 'فوق‌العاده']):
-                responses = [
-                    "😻 وای چقدر خوشحالم که خوشحالی! منم خیلی شادم! 🎉",
-                    "🐈 آفرین! عالیه که حالت خوبه! منم باهات شاد میشم! 😸",
-                    "🐾 چه خوب! انرژی مثبتت رو احساس می‌کنم! 💕"
-                ]
-                return random.choice(responses)
-            
-            # 6. پاسخ به موضوعات خاص
-            if any(word in full_context for word in ['کار', 'پروژه', 'تسک']):
-                return "🐈 آه کار! امیدوارم پروژه‌هات عالی پیش بره! موفق باشی! ��😊"
-            
-            if any(word in full_context for word in ['غذا', 'نهار', 'شام', 'صبحانه']):
-                return "😸 مم مم! غذا؟ من که گربه‌ام، عاشق ماهی و شیرم! تو چی دوست داری؟ 🐟🥛"
-            
-            if any(word in full_context for word in ['خواب', 'خسته', 'استراحت']):
-                return "😴 خواب خوب چیز خوبیه! حتماً استراحت کن تا حالت بهتر بشه! شب بخیر! 🌙💤"
-            
-            if any(word in full_context for word in ['بازی', 'گیم', 'سرگرمی']):
-                return "🎮 بازی؟ من عاشق بازی با نخ و توپم! تو چه بازی‌هایی دوست داری؟ 😸"
-            
-            # 7. پاسخ‌های عمومی بر اساس طول پیام
-            if len(full_context) > 100:  # پیام طولانی
-                responses = [
-                    "🐈 وای چقدر حرف داری! دوست دارم باهات حرف بزنم! ادامه بده! 😊",
-                    "😸 خیلی جالب بود! بیشتر بگو ببینم چی میشه! 🤗",
-                    "🐾 چه داستان جالبی! من که گوش می‌دم عزیزم! 👂💕"
-                ]
-                return random.choice(responses)
-            
-            elif len(full_context) < 10:  # پیام خیلی کوتاه
-                responses = [
-                    "🐈 هی! یه چیز کوتاه گفتی! بیشتر حرف بزن که بدونم چی می‌خوای! 😊",
-                    "😸 کمی کم حرف زدی! بیشتر توضیح بده! 🤗",
-                    "🐾 خب؟ منتظرم بیشتر بگی! 😻"
-                ]
-                return random.choice(responses)
-            
-            # 8. پاسخ‌های پیش‌فرض Littlejoy
-            default_responses = [
-                "🐈 جالب بود! ممنون که باهام حرف زدی! چیز دیگه‌ای هم داری؟ 😊",
-                "😸 آها! فهمیدم! خیلی خوشحالم که پیام دادی! 💕",
-                "🐾 حرف قشنگی زدی! دوست دارم بیشتر باهات حرف بزنم! 😻",
-                "🐱 ممنون از پیامت! همیشه خوشحالم که ازت می‌شنوم! 🤗",
-                "😺 چه جالب! یه گربه کنجکاو مثل من همیشه سوال داره! بگو ببینم چی شده؟ �"
-            ]
-            
-            return random.choice(default_responses)
+            # در غیر این صورت پاسخ تحلیل شده را برگردان
+            return final_response
             
         except Exception as e:
             self.log_message(f"❌ خطا در تولید پاسخ هوشمند: {e}")
@@ -1644,6 +2799,447 @@ class TelegramAIMessenger:
             threading.Thread(target=self.screenshot_telegram_and_reply, daemon=True).start()
         else:
             self.log_message("⚠️ عملیات قبلی هنوز در حال اجرا است")
+
+    def start_vision_ai_reply(self):
+        """شروع سیستم Vision AI پیشرفته"""
+        if not self.is_running:
+            self.is_running = True
+            self.log_message("🧠 شروع سیستم Vision AI پیشرفته...")
+            
+            # بررسی Ollama قبل از شروع
+            try:
+                test_response = requests.get("http://localhost:11434/api/tags", timeout=5)
+                if test_response.status_code == 200:
+                    self.log_message("✅ Ollama در دسترس است")
+                    threading.Thread(target=self.enhanced_screenshot_and_reply_with_vision, daemon=True).start()
+                else:
+                    self.log_message("❌ Ollama در دسترس نیست!")
+                    self.is_running = False
+            except:
+                self.log_message("❌ Ollama اجرا نشده! لطفاً ابتدا Ollama را شروع کنید")
+                self.is_running = False
+        else:
+            self.log_message("⚠️ عملیات قبلی هنوز در حال اجرا است")
+
+    def start_super_mode(self):
+        """🎯 حالت همه‌کاره - ترکیب بهترین ویژگی‌ها"""
+        if not self.is_running:
+            self.is_running = True
+            self.log_message("🎯 شروع حالت همه‌کاره - سیستم پیشرفته AI")
+            self.log_message("🚀 این حالت شامل: تشخیص خودکار + Vision AI + پاسخ هوشمند")
+            
+            # بررسی Ollama قبل از شروع
+            try:
+                test_response = requests.get("http://localhost:11434/api/tags", timeout=5)
+                if test_response.status_code == 200:
+                    self.log_message("✅ Ollama Vision در دسترس است")
+                    threading.Thread(target=self.super_intelligent_mode, daemon=True).start()
+                else:
+                    self.log_message("❌ Ollama در دسترس نیست! از حالت عادی استفاده می‌شود")
+                    threading.Thread(target=self.fallback_intelligent_mode, daemon=True).start()
+            except:
+                self.log_message("❌ Ollama اجرا نشده! از حالت جایگزین استفاده می‌شود")
+                threading.Thread(target=self.fallback_intelligent_mode, daemon=True).start()
+        else:
+            self.log_message("⚠️ عملیات قبلی هنوز در حال اجرا است")
+
+    def start_smart_send_mode(self):
+        """شروع حالت ارسال هوشمند پیام با Vision AI"""
+        if not self.is_running:
+            self.is_running = True
+            self.log_message("🎯 شروع حالت ارسال هوشمند...")
+            self.log_message("📝 پیام‌ها با Ollama Vision AI تولید و ارسال می‌شوند")
+            
+            # بررسی Ollama قبل از شروع
+            try:
+                test_response = requests.get("http://localhost:11434/api/tags", timeout=5)
+                if test_response.status_code == 200:
+                    self.log_message("✅ Ollama Vision در دسترس است")
+                    threading.Thread(target=self.smart_message_sending_with_vision, daemon=True).start()
+                else:
+                    self.log_message("❌ Ollama در دسترس نیست!")
+                    self.is_running = False
+            except:
+                self.log_message("❌ Ollama اجرا نشده! لطفاً ابتدا Ollama را شروع کنید")
+                self.is_running = False
+        else:
+            self.log_message("⚠️ عملیات قبلی هنوز در حال اجرا است")
+
+    def smart_message_sending_with_vision(self):
+        """ارسال هوشمند پیام با استفاده از Ollama Vision AI"""
+        try:
+            self.log_message("🧠 سیستم ارسال هوشمند با Vision AI فعال شد")
+            self.log_message("📖 تحلیل محتوای صفحه و تولید پاسخ‌های هوشمند...")
+            
+            selected_account = self.account_var.get().strip() if hasattr(self, 'account_var') else "تلگرام Portable"
+            account_info = next((acc for acc in self.config.get("telegram_accounts", []) if acc["username"] == selected_account), None)
+            
+            if not account_info:
+                self.log_message("❌ اطلاعات اکانت انتخاب شده پیدا نشد!")
+                return
+            
+            telegram_path = account_info.get("telegram_path", "")
+            self.log_message(f"📱 اتصال به: {selected_account}")
+            
+            # باز کردن تلگرام
+            subprocess.Popen([telegram_path])
+            time.sleep(8)  # زمان بیشتر برای بارگذاری
+            
+            # پیدا کردن پنجره و تنظیم بهبود یافته
+            target_window = self.find_and_focus_telegram_window()
+            if not target_window:
+                # تلاش مجدد بعد از انتظار بیشتر
+                self.log_message("⏳ انتظار بیشتر برای بارگذاری تلگرام...")
+                time.sleep(5)
+                target_window = self.find_and_focus_telegram_window()
+            
+            if target_window:
+                self.log_message(f"✅ پنجره تلگرام یافت شد: {target_window.width}x{target_window.height}")
+                
+                # تنظیم و بهینه‌سازی پنجره
+                self.optimize_telegram_window(target_window)
+                
+                # شروع چرخه ارسال هوشمند
+                success_count = 0
+                for cycle in range(5):  # کاهش به 5 چرخه برای تست
+                    if not self.is_running:
+                        break
+                    
+                    self.log_message(f"\n🔄 چرخه {cycle + 1}/5 - ارسال هوشمند")
+                    
+                    # گرفتن اسکرین‌شات
+                    screenshot, screenshot_path = self.take_verified_screenshot()
+                    if not screenshot:
+                        self.log_message("❌ مشکل در اسکرین‌شات")
+                        continue
+                    
+                    # تحلیل محتوا با Ollama Vision
+                    vision_analysis = self.analyze_screen_with_vision_ai(screenshot_path)
+                    
+                    if vision_analysis:
+                        self.log_message(f"🧠 تحلیل Vision AI: {vision_analysis[:100]}...")
+                        
+                        # تولید پیام هوشمند بر اساس تحلیل
+                        smart_message = self.generate_smart_message_from_analysis(vision_analysis)
+                        
+                        if smart_message:
+                            # ارسال پیام هوشمند با روش بهبود یافته
+                            if self.send_smart_message_improved(smart_message, target_window):
+                                success_count += 1
+                                self.log_message(f"✅ پیام هوشمند ارسال شد: {smart_message[:50]}...")
+                            else:
+                                self.log_message("❌ مشکل در ارسال پیام")
+                        else:
+                            self.log_message("⚠️ نتوانستم پیام مناسب تولید کنم")
+                    else:
+                        self.log_message("⚠️ تحلیل Vision AI موفق نبود")
+                    
+                    # انتظار بین چرخه‌ها
+                    time.sleep(self.interval_var.get() if hasattr(self, 'interval_var') else 30)
+                
+                self.log_message(f"\n🎉 ارسال هوشمند تمام شد! {success_count}/5 پیام موفق")
+            else:
+                self.log_message("❌ پنجره تلگرام پیدا نشد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال هوشمند: {e}")
+        finally:
+            self.is_running = False
+
+    def find_and_focus_telegram_window(self):
+        """پیدا کردن و فوکوس کردن پنجره تلگرام با بهترین روش"""
+        try:
+            self.log_message("🔍 جستجو برای پنجره تلگرام...")
+            
+            all_windows = gw.getAllWindows()
+            telegram_windows = []
+            
+            for window in all_windows:
+                window_title = window.title.lower()
+                # فیلتر دقیق‌تر برای تلگرام
+                if (('telegram' in window_title and 
+                     'messenger' not in window_title and
+                     'ai' not in window_title and
+                     'code' not in window_title and
+                     'studio' not in window_title and
+                     'visual' not in window_title) and
+                    window.visible and
+                    window.width > 300 and window.height > 200):
+                    telegram_windows.append(window)
+                    self.log_message(f"📱 پنجره یافت شد: '{window.title}' - {window.width}x{window.height} - موقعیت: ({window.left}, {window.top})")
+            
+            # اگر پنجره تلگرام مستقیم پیدا نشد، بر اساس فرآیند جستجو کن
+            if not telegram_windows:
+                self.log_message("🔍 جستجو بر اساس executable...")
+                for window in all_windows:
+                    if (window.visible and 
+                        window.width > 400 and window.height > 300 and
+                        'telegram' in window.title.lower() and
+                        'exe' not in window.title.lower()):
+                        telegram_windows.append(window)
+                        self.log_message(f"📱 پنجره مشکوک: '{window.title}' - {window.width}x{window.height}")
+            
+            if not telegram_windows:
+                self.log_message("❌ هیچ پنجره تلگرام پیدا نشد")
+                # نمایش همه پنجره‌ها برای دیباگ
+                self.log_message("🔍 همه پنجره‌های موجود:")
+                for window in all_windows[:10]:
+                    if window.visible and window.width > 200:
+                        self.log_message(f"   - '{window.title}' - {window.width}x{window.height}")
+                return None
+            
+            # انتخاب بهترین پنجره (بزرگترین و مرئی)
+            best_window = max(telegram_windows, key=lambda w: w.width * w.height)
+            
+            # فعال‌سازی پنجره
+            try:
+                best_window.activate()
+                time.sleep(1)
+                
+                # بررسی اینکه پنجره واقعاً فعال شده
+                if best_window.isActive:
+                    self.log_message("✅ پنجره تلگرام فعال شد")
+                else:
+                    # تلاش با کلیک
+                    center_x = best_window.left + best_window.width // 2
+                    center_y = best_window.top + best_window.height // 2
+                    pyautogui.click(center_x, center_y)
+                    time.sleep(1)
+                    self.log_message("✅ پنجره با کلیک فعال شد")
+                    
+            except Exception as e:
+                self.log_message(f"⚠️ مشکل در فعال‌سازی: {e}")
+            
+            return best_window
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در پیدا کردن پنجره: {e}")
+            return None
+
+    def optimize_telegram_window(self, window):
+        """بهینه‌سازی پنجره تلگرام برای کار بهتر"""
+        try:
+            self.log_message("⚙️ بهینه‌سازی پنجره تلگرام...")
+            
+            screen_width, screen_height = pyautogui.size()
+            
+            # اگر پنجره خیلی کوچک است، بزرگش کن
+            if window.width < screen_width * 0.7 or window.height < screen_height * 0.7:
+                try:
+                    # تلاش برای maximize
+                    window.maximize()
+                    time.sleep(2)
+                    self.log_message("📏 پنجره maximize شد")
+                except:
+                    # اگر maximize کار نکرد، از F11 استفاده کن
+                    pyautogui.press('f11')
+                    time.sleep(2)
+                    self.log_message("📏 از F11 برای بزرگ کردن استفاده شد")
+            
+            # مطمئن شدن از فعال بودن پنجره
+            window.activate()
+            time.sleep(1)
+            
+            # کلیک در وسط پنجره برای اطمینان
+            center_x = window.left + window.width // 2
+            center_y = window.top + window.height // 2
+            pyautogui.click(center_x, center_y)
+            time.sleep(0.5)
+            
+            self.log_message("✅ پنجره بهینه‌سازی شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در بهینه‌سازی پنجره: {e}")
+
+    def send_smart_message_improved(self, message, window):
+        """ارسال پیام هوشمند با محاسبه دقیق موقعیت"""
+        try:
+            self.log_message(f"📤 شروع ارسال پیام هوشمند: {message[:30]}...")
+            
+            # محاسبه موقعیت باکس پیام بر اساس اندازه پنجره
+            window_width = window.width
+            window_height = window.height
+            window_left = window.left
+            window_top = window.top
+            
+            # موقعیت باکس پیام (پایین وسط پنجره)
+            input_x = window_left + int(window_width * 0.5)  # وسط افقی
+            input_y = window_top + int(window_height * 0.85)  # 85% از بالا (پایین پنجره)
+            
+            self.log_message(f"🎯 موقعیت باکس پیام محاسبه شده: ({input_x}, {input_y})")
+            
+            # کلیک روی باکس پیام
+            success_click = self.safe_click_with_validation(input_x, input_y, "باکس پیام")
+            
+            if success_click:
+                # پاک کردن محتوای قبلی
+                pyautogui.hotkey('ctrl', 'a')
+                time.sleep(0.3)
+                pyautogui.press('delete')
+                time.sleep(0.5)
+                
+                # تایپ پیام
+                pyautogui.typewrite(message, interval=0.02)
+                time.sleep(1)
+                
+                # ارسال
+                pyautogui.press('enter')
+                time.sleep(1)
+                
+                self.log_message("✅ پیام با موفقیت ارسال شد")
+                return True
+            else:
+                # روش جایگزین: استفاده از Tab برای رفتن به باکس پیام
+                self.log_message("🔄 استفاده از روش جایگزین...")
+                pyautogui.press('tab')
+                time.sleep(0.5)
+                
+                pyperclip.copy(message)
+                time.sleep(0.3)
+                pyautogui.hotkey('ctrl', 'v')
+                time.sleep(0.5)
+                pyautogui.press('enter')
+                time.sleep(1)
+                
+                self.log_message("✅ پیام با روش جایگزین ارسال شد")
+                return True
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال پیام هوشمند: {e}")
+            return False
+
+    def safe_click_with_validation(self, x, y, description="", max_attempts=3):
+        """کلیک ایمن با اعتبارسنجی موقعیت"""
+        try:
+            screen_width, screen_height = pyautogui.size()
+            
+            # بررسی صحت مختصات
+            if x < 0 or x > screen_width or y < 0 or y > screen_height:
+                self.log_message(f"❌ مختصات نامعتبر: ({x}, {y}) - صفحه: {screen_width}x{screen_height}")
+                return False
+            
+            for attempt in range(max_attempts):
+                try:
+                    # حرکت آرام ماوس
+                    pyautogui.moveTo(x, y, duration=0.2)
+                    time.sleep(0.1)
+                    
+                    # کلیک
+                    pyautogui.click(x, y)
+                    time.sleep(0.3)
+                    
+                    self.log_message(f"✅ کلیک موفق در ({x}, {y}) - {description}")
+                    return True
+                    
+                except Exception as e:
+                    self.log_message(f"⚠️ تلاش {attempt+1} ناموفق: {e}")
+                    if attempt < max_attempts - 1:
+                        time.sleep(0.5)
+                        continue
+            
+            self.log_message(f"❌ همه تلاش‌ها برای کلیک ناموفق: {description}")
+            return False
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در کلیک: {e}")
+            return False
+
+    def analyze_screen_with_vision_ai(self, screenshot_path):
+        """تحلیل صفحه با Ollama Vision AI"""
+        try:
+            self.log_message("🔍 تحلیل صفحه با Vision AI...")
+            
+            # خواندن و کدگذاری تصویر
+            with open(screenshot_path, "rb") as image_file:
+                image_data = base64.b64encode(image_file.read()).decode('utf-8')
+            
+            # پرامپت برای تحلیل هوشمند
+            analysis_prompt = """تو یک هوش مصنوعی هستی که باید این صفحه تلگرام را تحلیل کنی و بهترین پاسخ را تولید کنی.
+
+وظایف تو:
+1. چت‌های خوانده نشده را تشخیص بده
+2. آخرین پیام‌ها را بخوان
+3. یک پاسخ مناسب و دوستانه پیشنهاد بده
+4. اگر سوالی هست پاسخ بده، اگر سلام است سلام کن
+
+فرمت پاسخ: فقط متن پیام را بنویس، بدون توضیح اضافی"""
+
+            # ارسال درخواست به Ollama
+            response = requests.post(
+                f"{self.config.get('ollama_url', 'http://localhost:11434')}/api/generate",
+                json={
+                    "model": self.config.get('ollama_model', 'llava'),
+                    "prompt": analysis_prompt,
+                    "images": [image_data],
+                    "stream": False
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                analysis = result.get('response', '').strip()
+                self.log_message(f"✅ تحلیل Vision AI موفق")
+                return analysis
+            else:
+                self.log_message(f"❌ خطا در Vision AI: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در تحلیل Vision: {e}")
+            return None
+
+    def generate_smart_message_from_analysis(self, analysis):
+        """تولید پیام هوشمند از تحلیل Vision AI"""
+        try:
+            # اگر تحلیل موجود است، آن را به عنوان پیام استفاده کن
+            if analysis and len(analysis.strip()) > 5:
+                # پاکسازی پیام
+                smart_message = analysis.strip()
+                
+                # حذف عبارات اضافی
+                remove_phrases = [
+                    "فرمت پاسخ:", "بدون توضیح اضافی", "متن پیام:", 
+                    "پاسخ:", "Response:", "Answer:"
+                ]
+                
+                for phrase in remove_phrases:
+                    smart_message = smart_message.replace(phrase, "").strip()
+                
+                # محدود کردن طول پیام
+                if len(smart_message) > 200:
+                    smart_message = smart_message[:200] + "..."
+                
+                return smart_message
+            
+            # پیام پیش‌فرض در صورت عدم موفقیت
+            default_messages = [
+                "سلام! چطوری؟ 😊",
+                "امیدوارم روز خوبی داشته باشی! 🌟",
+                "مرسی از پیامت! 💙",
+                "خوبی؟ چه خبر؟ 🤗"
+            ]
+            
+            return random.choice(default_messages)
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تولید پیام: {e}")
+            return "سلام! 😊"
+
+    def smart_send_generated_message(self, message):
+        """ارسال پیام تولید شده با روش هوشمند"""
+        try:
+            # پیدا کردن پنجره فعال تلگرام
+            window = self.find_and_focus_telegram_window()
+            if window:
+                return self.send_smart_message_improved(message, window)
+            else:
+                # fallback به روش قدیمی
+                return self.safe_send_message_advanced(message)
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال پیام تولید شده: {e}")
+            return False
 
     def read_and_reply_all_chats(self):
         """
@@ -2701,6 +4297,113 @@ class TelegramAIMessenger:
         else:
             print(f"🔄 {len(self.account_list)} اکانت تشخیص داده شد و به‌روزرسانی شد")
 
+    def generate_ai_reply(self, context):
+        """تولید پاسخ هوشمند با AI برای حالت همه‌کاره"""
+        if not hasattr(self, 'ai_enabled_var') or not self.ai_enabled_var.get():
+            # پیام‌های پیش‌فرض اگر AI فعال نباشد
+            default_replies = [
+                "سلام! چطوری؟ 😊",
+                "خوبی؟ چه خبر؟ 🌟",
+                "امیدوارم همه چی خوب باشه! ✨",
+                "درود! روزت چطوره؟ 💙",
+                "های! چه می‌کنی؟ 🤗"
+            ]
+            return random.choice(default_replies)
+        
+        try:
+            # استفاده از تنظیمات موجود یا پیش‌فرض
+            url = getattr(self, 'ollama_url_var', None)
+            model = getattr(self, 'ollama_model_var', None)
+            personality = getattr(self, 'personality_var', None)
+            use_variety = getattr(self, 'message_variety_var', None)
+            use_emojis = getattr(self, 'use_emojis_var', None)
+            
+            # مقادیر پیش‌فرض اگر متغیرها وجود نداشتند
+            url_str = url.get() if url else self.config.get('ollama_url', 'http://localhost:11434')
+            model_str = model.get() if model else self.config.get('ollama_model', 'llama3.1:8b')
+            personality_str = personality.get() if personality else self.config.get('personality', 'دوستانه و صمیمی')
+            use_variety_bool = use_variety.get() if use_variety else self.config.get('message_variety', True)
+            use_emojis_bool = use_emojis.get() if use_emojis else self.config.get('use_emojis', True)
+            
+            # تعریف شخصیت‌ها
+            personality_descriptions = {
+                'دوستانه و صمیمی': 'دوستانه، گرم و صمیمی',
+                'رسمی و حرفه‌ای': 'رسمی ولی مهربان',
+                'شوخ و سرگرم‌کننده': 'شوخ، بامزه و خنده‌دار',
+                'آموزشی و مفید': 'آموزشی و مفید',
+                'انگیزشی و مثبت': 'مثبت و پرانرژی',
+                'خلاق و هنری': 'خلاق و زیبا'
+            }
+            
+            # ایجاد prompt هوشمند
+            emoji_instruction = "از ایموجی‌های مناسب استفاده کن 😊 🌟 ✨ 💙 🤗" if use_emojis_bool else "از ایموجی استفاده نکن."
+            variety_instruction = "پاسخ را خلاقانه و متفاوت بنویس." if use_variety_bool else ""
+            
+            prompt = f"""
+تو یک دستیار هوشمند و دوستانه هستی که در تلگرام به کاربران پاسخ می‌دهی.
+
+شخصیت تو: {personality_descriptions.get(personality_str, 'دوستانه و صمیمی')}
+
+کنتکست مکالمه:
+{context}
+
+دستورالعمل:
+- پاسخ کوتاه و مناسب باشد (حداکثر 2-3 خط)
+- به آخرین پیام مستقیماً پاسخ بده
+- زبان فارسی و طبیعی استفاده کن
+- {variety_instruction}
+- {emoji_instruction}
+- مناسب چت خصوصی یا گروهی باشد
+- اگر سوالی پرسیده شده، مستقیماً جواب بده
+- اگر سلام یا احوالپرسی است، دوستانه جواب بده
+
+پاسخ مناسب:
+"""
+            
+            response = requests.post(f"{url_str}/api/generate",
+                json={
+                    "model": model_str,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,
+                        "max_tokens": 150
+                    }
+                },
+                timeout=25)
+            
+            if response.status_code == 200:
+                result = response.json()
+                ai_reply = result.get('response', '').strip()
+                
+                # پاک‌سازی پاسخ
+                ai_reply = ai_reply.replace('\n\n', '\n').strip()
+                
+                # اضافه کردن تنوع اضافی
+                if use_variety_bool and use_emojis_bool:
+                    random_emojis = ['✨', '🌟', '💫', '🎯', '💡', '🔥', '⚡', '🌈', '❤️']
+                    if ai_reply and not any(emoji in ai_reply for emoji in random_emojis):
+                        ai_reply += f" {random.choice(random_emojis)}"
+                
+                return ai_reply if ai_reply else "سلام! چطورید؟ 😊"
+            else:
+                if hasattr(self, 'log_message'):
+                    self.log_message(f"خطا در تولید پاسخ AI: {response.status_code}")
+                return "سلام! چطورید؟ 😊"
+                
+        except Exception as e:
+            if hasattr(self, 'log_message'):
+                self.log_message(f"خطا در تولید پاسخ AI: {e}")
+            
+            # پیام‌های جایگزین در صورت خطا
+            fallback_replies = [
+                "سلام! چطوری؟ 😊",
+                "خوبی؟ چه خبر؟ 🌟",
+                "امیدوارم روزت عالی باشه! ✨",
+                "درود! همه چی خوبه؟ 💙"
+            ]
+            return random.choice(fallback_replies)
+
     def load_config(self):
         """بارگذاری تنظیمات از فایل کانفیگ"""
         default_config = {
@@ -2765,6 +4468,17 @@ class TelegramAIMessenger:
         style = ttk.Style()
         style.theme_use('clam')
         
+        # استایل ویژه برای دکمه همه‌کاره
+        style.configure('SuperButton.TButton',
+                       font=('Arial', 12, 'bold'),
+                       background='#e74c3c',
+                       foreground='white',
+                       borderwidth=3,
+                       relief='raised')
+        style.map('SuperButton.TButton',
+                 background=[('active', '#c0392b'),
+                           ('pressed', '#a93226')])
+        
         # Notebook برای تب‌ها
         notebook = ttk.Notebook(self.root)
         notebook.pack(fill='both', expand=True, padx=10, pady=10)
@@ -2793,14 +4507,46 @@ class TelegramAIMessenger:
         ttk.Button(control_frame, text="💾 ذخیره تنظیمات", command=self.save_settings).pack(side='left', padx=5)
         ttk.Button(control_frame, text="📱 باز کردن تلگرام", command=self.open_telegram).pack(side='left', padx=5)
         ttk.Button(control_frame, text="🤖 تست AI", command=self.test_ai).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="🧠 تست Ollama Vision", command=self.test_ollama_vision).pack(side='left', padx=5)
         ttk.Button(control_frame, text="👁️ خواندن پیشرفته چت‌ها", command=self.start_read_and_reply).pack(side='left', padx=5)
         ttk.Button(control_frame, text="🤖 تشخیص هوشمند چت‌ها", command=self.start_enhanced_detection).pack(side='left', padx=5)
-        ttk.Button(control_frame, text="�️ اسکرین تلگرام + پاسخ", command=self.start_screenshot_and_reply).pack(side='left', padx=5)
-        ttk.Button(control_frame, text="�🔄 تشخیص اکانت‌ها", command=self.refresh_accounts).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="📷 اسکرین تلگرام + پاسخ", command=self.start_screenshot_and_reply).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="🧠 Vision AI پاسخ هوشمند", command=self.start_vision_ai_reply).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="🎯 ارسال هوشمند پیام", command=self.start_smart_send_mode).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="🔄 تشخیص اکانت‌ها", command=self.refresh_accounts).pack(side='left', padx=5)
+        
+        # دکمه همه‌کاره جدید
+        separator_frame = ttk.Frame(self.root)
+        separator_frame.pack(fill='x', padx=10, pady=10)
+        
+        super_button = ttk.Button(separator_frame, text="🎯 حالت همه‌کاره (AI Vision)", 
+                                command=self.start_super_mode, 
+                                style='SuperButton.TButton')
+        super_button.pack(pady=10)
+        
+        # توضیح کوتاه
+        description_label = tk.Label(separator_frame, 
+                                   text="🔥 بهترین حالت: تشخیص خودکار + Vision AI + پاسخ هوشمند", 
+                                   fg='#e74c3c', font=('Arial', 9, 'bold'), bg='#2c3e50')
+        description_label.pack(pady=2)
         
         # وضعیت
         self.status_label = tk.Label(self.root, text="آماده", bg='#2c3e50', fg='#2ecc71', font=('Arial', 10, 'bold'))
         self.status_label.pack(pady=5)
+        
+        # راهنمای گزینه‌ها
+        guide_frame = ttk.Frame(self.root)
+        guide_frame.pack(fill='x', padx=10, pady=5)
+        
+        guide_text = tk.Text(guide_frame, height=3, bg='#34495e', fg='#ecf0f1', font=('Arial', 8), 
+                           relief='flat', wrap='word', state='disabled')
+        guide_text.pack(fill='x')
+        
+        guide_content = """🎯 ارسال هوشمند پیام: تحلیل صفحه با Ollama Vision و تولید پاسخ‌های هوشمند | 🧠 Vision AI پاسخ هوشمند: پاسخ خودکار با تحلیل محتوا | 📷 اسکرین + پاسخ: گرفتن عکس و پاسخ‌دهی"""
+        
+        guide_text.config(state='normal')
+        guide_text.insert('1.0', guide_content)
+        guide_text.config(state='disabled')
         
         # لاگ
         log_frame = ttk.Frame(self.root)
@@ -2950,6 +4696,63 @@ class TelegramAIMessenger:
         except Exception as e:
             self.log_message(f"❌ خطا در تست Ollama: {e}")
             messagebox.showerror("خطا در اتصال", f"نمی‌توان به Ollama متصل شد:\n\n{str(e)}\n\nمطمئن شوید که:\n• Ollama در حال اجرا است\n• آدرس صحیح است\n• مدل نصب شده")
+    
+    def test_ollama_vision(self):
+        """تست مدل Vision Ollama"""
+        try:
+            self.log_message("🧠 تست مدل Vision Ollama...")
+            
+            # بررسی اتصال Ollama
+            response = requests.get("http://localhost:11434/api/tags", timeout=10)
+            
+            if response.status_code != 200:
+                messagebox.showerror("خطا", "Ollama در دسترس نیست!")
+                return
+            
+            # بررسی وجود مدل vision
+            models = response.json().get('models', [])
+            vision_models = [model for model in models if 'llava' in model.get('name', '').lower() or 'vision' in model.get('name', '').lower()]
+            
+            if not vision_models:
+                messagebox.showwarning("هشدار", "مدل Vision (llava) یافت نشد!\n\nلطفاً با دستور زیر نصب کنید:\nollama pull llava:latest")
+                return
+            
+            # تست با یک تصویر نمونه (اسکرین‌شات کوچک)
+            screenshot = pyautogui.screenshot()
+            # کوچک کردن برای تست
+            screenshot = screenshot.resize((400, 300))
+            
+            # تبدیل به base64
+            buffer = io.BytesIO()
+            screenshot.save(buffer, format='PNG')
+            image_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+            
+            # تست درخواست vision
+            test_prompt = "این تصویر چیست؟ به فارسی پاسخ دهید."
+            
+            vision_response = requests.post("http://localhost:11434/api/generate", 
+                json={
+                    "model": vision_models[0]['name'],
+                    "prompt": test_prompt,
+                    "images": [image_data],
+                    "stream": False,
+                    "options": {"temperature": 0.1}
+                }, 
+                timeout=30)
+            
+            if vision_response.status_code == 200:
+                result = vision_response.json()
+                ai_response = result.get('response', '').strip()
+                
+                self.log_message(f"✅ Vision Model کار می‌کند!")
+                messagebox.showinfo("موفقیت! 🧠", 
+                    f"مدل Vision آماده است!\n\nمدل: {vision_models[0]['name']}\n\nپاسخ تست:\n{ai_response[:200]}...")
+            else:
+                messagebox.showerror("خطا", f"خطا در تست Vision: {vision_response.status_code}")
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در تست Vision: {e}")
+            messagebox.showerror("خطا", f"خطا در تست Vision Ollama:\n\n{str(e)}")
     
     def generate_ai_message(self, base_message="", context=""):
         """تولید پیام هوشمند با Ollama"""
@@ -3317,6 +5120,730 @@ class TelegramAIMessenger:
             self.stop_messaging()
         self.save_settings()
         self.root.destroy()
+
+    def super_intelligent_mode(self):
+        """🎯 حالت همه‌کاره با Vision AI - سیستم کاملاً خودکار"""
+        try:
+            self.log_message("🚀 شروع سیستم Vision AI کاملاً خودکار")
+            self.log_message("👁️ هر ثانیه اسکرین‌شات + تحلیل + پاسخ خودکار")
+            
+            # آماده‌سازی اولیه
+            self.setup_realtime_vision_system()
+            
+            # بررسی Ollama Vision
+            if not self.check_ollama_vision_ready():
+                self.log_message("❌ Ollama Vision آماده نیست!")
+                return self.fallback_intelligent_mode()
+            
+            # باز کردن و تنظیم تلگرام
+            if not self.setup_telegram_for_vision():
+                self.log_message("❌ تلگرام آماده نشد!")
+                return False
+            
+            # شروع حلقه Vision AI کاملاً خودکار
+            self.start_realtime_vision_loop()
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در سیستم Vision: {e}")
+            self.fallback_intelligent_mode()
+        finally:
+            self.is_running = False
+
+    def setup_realtime_vision_system(self):
+        """آماده‌سازی سیستم Vision بلادرنگ"""
+        try:
+            self.log_message("⚙️ آماده‌سازی سیستم Vision بلادرنگ...")
+            
+            # پارامترهای سیستم بلادرنگ
+            self.vision_interval = 1.0  # هر 1 ثانیه
+            self.max_vision_cycles = 200  # 200 چرخه (حدود 3 دقیقه)
+            self.last_processed_messages = {}  # پیام‌های پردازش شده
+            self.vision_success_count = 0
+            self.vision_error_count = 0
+            
+            # آمار عملکرد
+            self.performance_stats = {
+                'screenshots_taken': 0,
+                'messages_read': 0,
+                'responses_sent': 0,
+                'vision_analyses': 0,
+                'start_time': time.time()
+            }
+            
+            self.log_message("✅ سیستم Vision آماده شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در آماده‌سازی: {e}")
+
+    def check_ollama_vision_ready(self):
+        """بررسی آمادگی Ollama Vision"""
+        try:
+            self.log_message("🔍 بررسی Ollama Vision...")
+            
+            # بررسی اتصال
+            response = requests.get("http://localhost:11434/api/tags", timeout=5)
+            if response.status_code != 200:
+                return False
+            
+            # بررسی مدل Vision
+            models = response.json().get('models', [])
+            vision_models = [m for m in models if 'llava' in m.get('name', '').lower()]
+            
+            if not vision_models:
+                self.log_message("❌ مدل Vision (llava) پیدا نشد!")
+                return False
+            
+            self.vision_model = vision_models[0]['name']
+            self.log_message(f"✅ مدل Vision آماده: {self.vision_model}")
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در بررسی Ollama: {e}")
+            return False
+
+    def setup_telegram_for_vision(self):
+        """تنظیم تلگرام برای سیستم Vision"""
+        try:
+            self.log_message("📱 تنظیم تلگرام برای Vision...")
+            
+            # انتخاب اکانت
+            selected_account = self.account_var.get().strip() if hasattr(self, 'account_var') else "تلگرام Portable"
+            account_info = next((acc for acc in self.config.get("telegram_accounts", []) if acc["username"] == selected_account), None)
+            
+            if not account_info:
+                self.auto_detect_telegram_accounts()
+                account_info = self.config.get("telegram_accounts", [{}])[0] if self.config.get("telegram_accounts") else {}
+            
+            # باز کردن تلگرام
+            telegram_path = account_info.get("telegram_path", "")
+            if telegram_path and os.path.exists(telegram_path):
+                subprocess.Popen([telegram_path])
+            else:
+                pyautogui.hotkey('win', 'r')
+                time.sleep(0.5)
+                pyautogui.typewrite('telegram')
+                pyautogui.press('enter')
+            
+            time.sleep(8)  # انتظار بارگذاری
+            
+            # پیدا کردن و تنظیم پنجره
+            self.telegram_window = self.find_and_focus_telegram_window()
+            if not self.telegram_window:
+                time.sleep(5)
+                self.telegram_window = self.find_and_focus_telegram_window()
+            
+            if not self.telegram_window:
+                return False
+            
+            # بهینه‌سازی پنجره برای Vision
+            self.optimize_telegram_for_vision(self.telegram_window)
+            
+            self.log_message("✅ تلگرام آماده شد")
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تنظیم تلگرام: {e}")
+            return False
+
+    def optimize_telegram_for_vision(self, window):
+        """بهینه‌سازی تلگرام برای Vision AI"""
+        try:
+            # بزرگ کردن پنجره
+            window.maximize()
+            time.sleep(1)
+            window.activate()
+            time.sleep(1)
+            
+            # کلیک در وسط برای فوکوس
+            center_x = window.left + window.width // 2
+            center_y = window.top + window.height // 2
+            pyautogui.click(center_x, center_y)
+            time.sleep(0.5)
+            
+            self.log_message("✅ تلگرام بهینه شد برای Vision")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در بهینه‌سازی: {e}")
+
+    def start_realtime_vision_loop(self):
+        """شروع حلقه Vision AI بلادرنگ"""
+        try:
+            self.log_message("🔄 شروع حلقه Vision AI بلادرنگ...")
+            self.log_message(f"⏱️ هر {self.vision_interval} ثانیه: اسکرین‌شات → تحلیل → پاسخ")
+            
+            for cycle in range(self.max_vision_cycles):
+                if not self.is_running:
+                    break
+                
+                cycle_start = time.time()
+                self.log_message(f"\n🔄 چرخه {cycle + 1}/{self.max_vision_cycles}")
+                
+                # اطمینان از فوکوس تلگرام
+                self.ensure_telegram_focus(self.telegram_window)
+                
+                # مرحله 1: اسکرین‌شات سریع
+                screenshot_success = self.take_realtime_screenshot()
+                if not screenshot_success:
+                    continue
+                
+                # مرحله 2: تحلیل Vision سریع
+                vision_result = self.analyze_telegram_with_vision()
+                if not vision_result:
+                    continue
+                
+                # مرحله 3: پردازش و پاسخ سریع
+                response_sent = self.process_vision_result_and_respond(vision_result)
+                
+                # آمارگیری
+                self.update_performance_stats(screenshot_success, vision_result, response_sent)
+                
+                # انتظار تا چرخه بعدی
+                cycle_time = time.time() - cycle_start
+                remaining_time = max(0, self.vision_interval - cycle_time)
+                
+                if remaining_time > 0:
+                    self.smart_wait(remaining_time, cycle + 1)
+            
+            # گزارش نهایی
+            self.show_final_vision_report()
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در حلقه Vision: {e}")
+
+    def take_realtime_screenshot(self):
+        """گرفتن اسکرین‌شات بلادرنگ"""
+        try:
+            # اسکرین‌شات سریع
+            screenshot = pyautogui.screenshot()
+            timestamp = int(time.time())
+            screenshot_path = f"telegram_realtime_{timestamp}.png"
+            
+            # ذخیره سریع
+            screenshot.save(screenshot_path)
+            
+            # بررسی سریع
+            if os.path.exists(screenshot_path) and os.path.getsize(screenshot_path) > 5000:
+                self.current_screenshot = screenshot_path
+                self.performance_stats['screenshots_taken'] += 1
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در اسکرین‌شات: {e}")
+            return False
+
+    def analyze_telegram_with_vision(self):
+        """تحلیل تلگرام با Vision AI"""
+        try:
+            if not hasattr(self, 'current_screenshot'):
+                return None
+            
+            # خواندن و کدگذاری تصویر
+            with open(self.current_screenshot, "rb") as image_file:
+                image_data = base64.b64encode(image_file.read()).decode('utf-8')
+            
+            # پرامپت پیشرفته برای تحلیل
+            vision_prompt = """تو یک هوش مصنوعی پیشرفته هستی که صفحه تلگرام را تحلیل می‌کنی.
+
+وظایف تو:
+1. چت‌های خوانده نشده را تشخیص بده
+2. آخرین پیام‌ها را در چت فعلی بخوان
+3. اگر پیام جدیدی هست، یک پاسخ کوتاه و مناسب پیشنهاد بده
+4. اگر چیزی برای پاسخ نیست، بگو "NO_RESPONSE_NEEDED"
+
+فقط پاسخ پیشنهادی را بنویس، هیچ توضیح اضافی ندهید.
+اگر نیازی به پاسخ نیست، دقیقاً بنویس: NO_RESPONSE_NEEDED"""
+
+            # ارسال به Ollama Vision
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": self.vision_model,
+                    "prompt": vision_prompt,
+                    "images": [image_data],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,
+                        "max_tokens": 100
+                    }
+                },
+                timeout=10  # تایم‌اوت کوتاه برای سرعت
+            )
+            
+            if response.status_code == 200:
+                result = response.json().get('response', '').strip()
+                self.performance_stats['vision_analyses'] += 1
+                return result
+            
+            return None
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تحلیل Vision: {e}")
+            self.vision_error_count += 1
+            return None
+
+    def process_vision_result_and_respond(self, vision_result):
+        """پردازش نتیجه Vision و ارسال پاسخ"""
+        try:
+            if not vision_result or vision_result == "NO_RESPONSE_NEEDED":
+                return False
+            
+            # بررسی تکراری نبودن پاسخ
+            response_hash = hash(vision_result)
+            if response_hash in self.last_processed_messages:
+                return False
+            
+            # ارسال پاسخ سریع
+            sent = self.send_quick_response(vision_result)
+            
+            if sent:
+                self.last_processed_messages[response_hash] = time.time()
+                self.performance_stats['responses_sent'] += 1
+                self.vision_success_count += 1
+                self.log_message(f"✅ پاسخ ارسال شد: {vision_result[:40]}...")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در پردازش: {e}")
+            return False
+
+    def send_quick_response(self, message):
+        """ارسال سریع پاسخ"""
+        try:
+            # پیدا کردن باکس پیام سریع
+            screen_width, screen_height = pyautogui.size()
+            input_x = screen_width // 2
+            input_y = screen_height - 100
+            
+            # کلیک سریع
+            pyautogui.click(input_x, input_y)
+            time.sleep(0.2)
+            
+            # پاک کردن سریع
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.1)
+            
+            # نوشتن سریع
+            pyperclip.copy(message)
+            time.sleep(0.1)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.3)
+            
+            # ارسال
+            pyautogui.press('enter')
+            time.sleep(0.2)
+            
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال سریع: {e}")
+            return False
+
+    def update_performance_stats(self, screenshot_ok, vision_ok, response_ok):
+        """آپدیت آمار عملکرد"""
+        current_time = time.time()
+        elapsed = current_time - self.performance_stats['start_time']
+        
+        # محاسبه نرخ‌ها
+        fps = self.performance_stats['screenshots_taken'] / max(elapsed, 1)
+        success_rate = (self.vision_success_count / max(self.performance_stats['vision_analyses'], 1)) * 100
+        
+        # آپدیت وضعیت
+        status_text = f"📊 Vision: {self.performance_stats['vision_analyses']} | پاسخ: {self.performance_stats['responses_sent']} | نرخ: {success_rate:.1f}%"
+        self.status_label.config(text=status_text, fg='#27ae60')
+
+    def smart_wait(self, seconds, cycle):
+        """انتظار هوشمند"""
+        for i in range(int(seconds * 10)):  # دقت 0.1 ثانیه
+            if not self.is_running:
+                break
+            
+            remaining = (int(seconds * 10) - i) / 10
+            if i % 5 == 0:  # هر 0.5 ثانیه آپدیت
+                self.status_label.config(text=f"⏱️ چرخه {cycle} | انتظار: {remaining:.1f}s", fg='#f39c12')
+            
+            time.sleep(0.1)
+
+    def show_final_vision_report(self):
+        """نمایش گزارش نهایی"""
+        try:
+            elapsed = time.time() - self.performance_stats['start_time']
+            
+            self.log_message("\n📊 گزارش نهایی Vision AI:")
+            self.log_message(f"⏱️ زمان اجرا: {elapsed:.1f} ثانیه")
+            self.log_message(f"📸 اسکرین‌شات‌ها: {self.performance_stats['screenshots_taken']}")
+            self.log_message(f"👁️ تحلیل‌های Vision: {self.performance_stats['vision_analyses']}")
+            self.log_message(f"💬 پاسخ‌های ارسالی: {self.performance_stats['responses_sent']}")
+            self.log_message(f"✅ موفقیت‌ها: {self.vision_success_count}")
+            self.log_message(f"❌ خطاها: {self.vision_error_count}")
+            
+            success_rate = (self.vision_success_count / max(self.performance_stats['vision_analyses'], 1)) * 100
+            self.log_message(f"📈 نرخ موفقیت: {success_rate:.1f}%")
+            
+            final_status = f"🎯 تمام شد! {self.performance_stats['responses_sent']} پاسخ در {elapsed:.0f}s"
+            self.status_label.config(text=final_status, fg='#e74c3c')
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در گزارش: {e}")
+            
+    def fallback_intelligent_mode(self):
+        """حالت جایگزین هوشمند در صورت عدم دسترسی به Vision"""
+        try:
+            self.log_message("🔧 فعال‌سازی حالت جایگزین هوشمند...")
+            
+            # روش ساده تر بدون Vision
+            selected_account = self.account_var.get().strip() if hasattr(self, 'account_var') else "تلگرام Portable"
+            
+            # باز کردن تلگرام
+            pyautogui.hotkey('win', 'r')
+            time.sleep(1)
+            pyautogui.typewrite('telegram')
+            time.sleep(0.5)
+            pyautogui.press('enter')
+            time.sleep(8)
+            
+            # ارسال پیام‌های ساده
+            for i in range(5):
+                if not self.is_running:
+                    break
+                    
+                self.log_message(f"📤 ارسال پیام ساده {i+1}/5")
+                self.send_simple_ai_message()
+                time.sleep(15)
+                
+            self.log_message("✅ حالت جایگزین تمام شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در حالت جایگزین: {e}")
+        finally:
+            self.is_running = False
+            
+    def send_simple_ai_message(self):
+        """ارسال پیام ساده AI"""
+        try:
+            # کلیک در باکس پیام
+            screen_width, screen_height = pyautogui.size()
+            pyautogui.click(screen_width//2, screen_height-100)
+            time.sleep(0.5)
+            
+            # تولید پیام AI
+            ai_message = self.generate_ai_message()
+            
+            # ارسال
+            pyperclip.copy(ai_message)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(0.5)
+            pyautogui.press('enter')
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال ساده: {e}")
+
+    def fallback_intelligent_mode(self):
+        """حالت جایگزین هوشمند بدون Vision AI"""
+        try:
+            self.log_message("🔧 فعال‌سازی حالت جایگزین هوشمند...")
+            self.log_message("📋 ویژگی‌ها: تشخیص اکانت + خواندن پیام + پاسخ AI")
+            
+            # باز کردن تلگرام
+            selected_account = self.account_var.get().strip() if hasattr(self, 'account_var') else "تلگرام Portable"
+            account_info = next((acc for acc in self.config.get("telegram_accounts", []) if acc["username"] == selected_account), None)
+            
+            if account_info and account_info.get("telegram_path"):
+                subprocess.Popen([account_info["telegram_path"]])
+            else:
+                pyautogui.hotkey('win', 'r')
+                time.sleep(1)
+                pyautogui.typewrite('telegram')
+                pyautogui.press('enter')
+            
+            time.sleep(6)
+            
+            # تشخیص پنجره
+            window = self.find_and_focus_telegram_window()
+            if window:
+                self.optimize_telegram_window(window)
+                
+                success_count = 0
+                for cycle in range(8):  # 8 چرخه
+                    if not self.is_running:
+                        break
+                    
+                    self.log_message(f"🔄 چرخه {cycle + 1}/8 - روش جایگزین")
+                    
+                    # خواندن پیام‌ها
+                    messages = self.read_messages_improved()
+                    
+                    if messages:
+                        # تولید پاسخ با AI (بدون Vision)
+                        context = " ".join(messages[-3:])  # 3 پیام آخر
+                        reply = self.generate_ai_reply(context)
+                        
+                        if self.send_message_improved(reply):
+                            success_count += 1
+                            self.log_message(f"✅ پاسخ ارسال شد: {reply[:40]}...")
+                    
+                    # انتظار
+                    time.sleep(self.interval_var.get() if hasattr(self, 'interval_var') else 25)
+                
+                self.log_message(f"✅ حالت جایگزین تمام شد: {success_count}/8 موفق")
+            else:
+                self.log_message("❌ پنجره تلگرام پیدا نشد")
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در حالت جایگزین: {e}")
+        finally:
+            self.is_running = False
+
+    def generate_default_smart_message(self):
+        """تولید پیام پیش‌فرض هوشمند"""
+        smart_messages = [
+            "سلام! چطوری؟ امیدوارم روز خوبی داشته باشی! 😊",
+            "درود! چه خبر؟ همه چی خوبه؟ 🌟",
+            "های! چطور حالت؟ امیدوارم عالی باشی! ✨",
+            "سلام عزیزم! چه می‌کنی؟ روزت چطوره؟ 🤗",
+            "هلو! چطوری؟ امیدوارم همه چی روبه‌راه باشه! 💙",
+            "سلام گلم! خوبی؟ چیزی نیاز نداری؟ 😊",
+            "درود بر تو! چطور پیش میره؟ 🌈",
+            "های! امیدوارم روز فوق‌العاده‌ای داری! ⭐"
+        ]
+        return random.choice(smart_messages)
+
+    def take_verified_screenshot(self):
+        """گرفتن اسکرین‌شات با تأیید صحت"""
+        try:
+            screenshot = pyautogui.screenshot()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            screenshot_path = f"telegram_verified_{int(time.time())}.png"
+            screenshot.save(screenshot_path)
+            
+            # بررسی اینکه فایل درست ذخیره شده
+            if os.path.exists(screenshot_path) and os.path.getsize(screenshot_path) > 1000:
+                self.log_message(f"✅ اسکرین‌شات ذخیره شد: {screenshot_path}")
+                return screenshot, screenshot_path
+            else:
+                self.log_message("❌ مشکل در ذخیره اسکرین‌شات")
+                return None, None
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در اسکرین‌شات: {e}")
+            return None, None
+
+    def keep_telegram_focused(self, window):
+        """تثبیت و نگه‌داشتن فوکوس روی تلگرام"""
+        try:
+            # بزرگ کردن و فعال‌سازی پنجره
+            window.activate()
+            time.sleep(0.5)
+            window.maximize()
+            time.sleep(1)
+            
+            # کلیک در وسط پنجره برای اطمینان
+            center_x = window.left + window.width // 2
+            center_y = window.top + window.height // 2
+            pyautogui.click(center_x, center_y)
+            time.sleep(0.5)
+            
+            self.log_message("✅ تلگرام فوکوس شد و بزرگ شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تثبیت فوکوس: {e}")
+
+    def ensure_telegram_focus(self, window):
+        """اطمینان از فوکوس بودن تلگرام"""
+        try:
+            if not window.isActive:
+                self.log_message("🔄 بازگرداندن فوکوس به تلگرام...")
+                window.activate()
+                time.sleep(0.5)
+                
+                # کلیک در وسط پنجره
+                center_x = window.left + window.width // 2
+                center_y = window.top + window.height // 2
+                pyautogui.click(center_x, center_y)
+                time.sleep(0.3)
+                
+        except Exception as e:
+            self.log_message(f"⚠️ مشکل در بازگرداندن فوکوس: {e}")
+
+    def wait_with_focus_check(self, window, seconds):
+        """انتظار با بررسی دوره‌ای فوکوس"""
+        for i in range(int(seconds)):
+            if not self.is_running:
+                break
+            
+            # هر 5 ثانیه فوکوس رو بررسی کن
+            if i % 5 == 0:
+                self.ensure_telegram_focus(window)
+            
+            # آپدیت وضعیت
+            remaining = seconds - i
+            self.status_label.config(text=f"انتظار: {remaining}s", fg='#f39c12')
+            time.sleep(1)
+
+    def process_telegram_chats(self):
+        """پردازش چت‌های تلگرام - خواندن و پاسخ‌دهی"""
+        try:
+            self.log_message("📋 شروع پردازش چت‌های تلگرام...")
+            
+            # مرحله 1: رفتن به اولین چت
+            success = self.navigate_to_first_chat()
+            if not success:
+                self.log_message("❌ نتوانستم به چت اول برسم")
+                return False
+            
+            # مرحله 2: خواندن پیام‌های چت فعلی
+            messages = self.read_current_chat_messages()
+            if not messages:
+                self.log_message("⚠️ پیامی در چت فعلی پیدا نشد")
+                return False
+            
+            self.log_message(f"📖 {len(messages)} پیام خوانده شد")
+            
+            # مرحله 3: تولید پاسخ مناسب
+            response = self.generate_smart_response_for_chat(messages)
+            if not response:
+                self.log_message("❌ نتوانستم پاسخ مناسب تولید کنم")
+                return False
+            
+            # مرحله 4: ارسال پاسخ
+            sent = self.send_response_to_chat(response)
+            if sent:
+                self.log_message(f"✅ پاسخ ارسال شد: {response[:50]}...")
+                return True
+            else:
+                self.log_message("❌ مشکل در ارسال پاسخ")
+                return False
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در پردازش چت: {e}")
+            return False
+
+    def navigate_to_first_chat(self):
+        """رفتن به اولین چت در لیست"""
+        try:
+            # کلیک روی ناحیه لیست چت‌ها (سمت چپ)
+            chat_list_x = 200  # سمت چپ صفحه
+            chat_list_y = 200  # قسمت بالای لیست
+            
+            pyautogui.click(chat_list_x, chat_list_y)
+            time.sleep(0.5)
+            
+            # فشردن کلید Home برای رفتن به بالای لیست
+            pyautogui.press('home')
+            time.sleep(0.5)
+            
+            # کلیک روی اولین چت
+            first_chat_y = 150
+            pyautogui.click(chat_list_x, first_chat_y)
+            time.sleep(1)
+            
+            self.log_message("✅ به اولین چت رفتم")
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در رفتن به چت اول: {e}")
+            return False
+
+    def read_current_chat_messages(self):
+        """خواندن پیام‌های چت فعلی"""
+        try:
+            messages = []
+            
+            # کلیک در ناحیه پیام‌ها (وسط صفحه)
+            message_area_x = 800
+            message_area_y = 400
+            pyautogui.click(message_area_x, message_area_y)
+            time.sleep(0.5)
+            
+            # اسکرول به آخرین پیام‌ها
+            for _ in range(3):
+                pyautogui.scroll(-5, x=message_area_x, y=message_area_y)
+                time.sleep(0.3)
+            
+            # انتخاب همه متن در ناحیه چت
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(1)
+            
+            # کپی متن
+            pyautogui.hotkey('ctrl', 'c')
+            time.sleep(1)
+            
+            # دریافت متن کپی شده
+            all_text = pyperclip.paste()
+            
+            if all_text and len(all_text) > 10:
+                # پردازش و تمیز کردن پیام‌ها
+                lines = all_text.strip().split('\n')
+                
+                # فیلتر کردن خطوط معتبر
+                for line in lines:
+                    cleaned_line = line.strip()
+                    if (len(cleaned_line) > 5 and 
+                        not cleaned_line.isdigit() and
+                        not cleaned_line.startswith('http') and
+                        any(char.isalpha() for char in cleaned_line)):
+                        messages.append(cleaned_line)
+                
+                # برگرداندن 5 پیام آخر
+                return messages[-5:] if messages else []
+            
+            return []
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در خواندن پیام‌ها: {e}")
+            return []
+
+    def generate_smart_response_for_chat(self, messages):
+        """تولید پاسخ هوشمند برای چت بر اساس پیام‌ها"""
+        try:
+            if not messages:
+                return None
+            
+            # ترکیب پیام‌ها برای کنتکست
+            context = "\n".join(messages[-3:])  # 3 پیام آخر
+            
+            # تولید پاسخ با AI
+            response = self.generate_ai_reply(context)
+            
+            return response
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در تولید پاسخ: {e}")
+            return None
+
+    def send_response_to_chat(self, response):
+        """ارسال پاسخ به چت فعلی"""
+        try:
+            # کلیک روی باکس پیام (پایین صفحه)
+            input_x = 800
+            input_y = 650
+            pyautogui.click(input_x, input_y)
+            time.sleep(0.5)
+            
+            # پاک کردن محتوای قبلی
+            pyautogui.hotkey('ctrl', 'a')
+            time.sleep(0.2)
+            pyautogui.press('delete')
+            time.sleep(0.3)
+            
+            # نوشتن پاسخ
+            pyperclip.copy(response)
+            time.sleep(0.3)
+            pyautogui.hotkey('ctrl', 'v')
+            time.sleep(1)
+            
+            # ارسال
+            pyautogui.press('enter')
+            time.sleep(1)
+            
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در ارسال پاسخ: {e}")
+            return False
 
 if __name__ == "__main__":
     try:

@@ -1,3 +1,4 @@
+# کتابخانه‌های ضروری برای عملکرد اصلی
 pyautogui==0.9.54
 pyperclip==1.8.2
 Pillow==10.0.0
@@ -6,3 +7,41 @@ opencv-python==4.12.0.88
 numpy==2.2.6
 python-telegram-bot==20.7
 pygetwindow==0.0.9
+base64
+json
+time
+os
+subprocess
+threading
+
+# کتابخانه‌های Vision AI
+# ollama (نصب جداگانه مورد نیاز)
+# llava model برای computer vision
+
+# کتابخانه‌های اختیاری برای ویژگی‌های پیشرفته
+# برای OCR تشخیص badge ها (اختیاری - افزایش دقت تشخیص)
+# pytesseract==0.3.10
+
+# برای کنترل پیشرفته Windows (اختیاری - بهبود window management)
+# pywin32>=306
+
+# برای تحلیل عملکرد (اختیاری - monitoring)
+# psutil>=5.9.0
+
+# برای machine learning آینده (اختیاری - AI improvements)
+# scikit-learn>=1.3.0
+# transformers>=4.30.0
+
+# برای API development (اختیاری - web services)
+# flask>=2.3.0
+# fastapi>=0.100.0
+
+# برای testing پیشرفته (اختیاری - development)
+# pytest>=7.4.0
+# pytest-cov>=4.1.0
+
+# برای logging پیشرفته (اختیاری - debugging)
+# loguru>=0.7.0
+
+# نصب کتابخانه‌های اختیاری:
+# pip install pytesseract pywin32 psutil
