@@ -31,13 +31,32 @@ import subprocess
 import pygetwindow as gw
 from PIL import Image, ImageTk
 
+# بارگذاری تنظیمات محیطی
+def load_env_config():
+    """بارگذاری تنظیمات از فایل .env"""
+    env_config = {}
+    env_file = Path(__file__).parent / '.env'
+    
+    if env_file.exists():
+        with open(env_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    env_config[key.strip()] = value.strip()
+    
+    return env_config
+
 class TelegramAdminPro:
     """کلاس اصلی ادمین هوشمند تلگرام"""
     
     def __init__(self):
         """مقداردهی اولیه سیستم"""
-        self.version = "3.0.0"
+        self.version = "3.0.1"
         self.product_name = "Telegram AI Admin Pro"
+        
+        # بارگذاری تنظیمات محیطی
+        self.env_config = load_env_config()
         
         # مسیرها و فایل‌ها
         self.base_dir = Path(__file__).parent
@@ -77,9 +96,9 @@ class TelegramAdminPro:
         }
         
         # راه‌اندازی اولیه
+        self.setup_logging()  # ابتدا logging را تنظیم کنیم
         self.setup_system()
         self.setup_database()
-        self.setup_logging()
         self.create_gui()
         
     def setup_system(self):
@@ -99,6 +118,10 @@ class TelegramAdminPro:
         except Exception as e:
             print(f"خطا در راه‌اندازی سیستم: {e}")
             self.config = self.default_config.copy()
+            # تنظیم logger ساده برای خطاهای اولیه
+            import logging
+            logging.basicConfig(level=logging.INFO)
+            self.logger = logging.getLogger(__name__)
     
     def setup_database(self):
         """راه‌اندازی پایگاه داده"""
@@ -158,10 +181,9 @@ class TelegramAdminPro:
     
     def setup_logging(self):
         """راه‌اندازی سیستم لاگ"""
-        log_level = getattr(logging, self.config.get('admin_settings', {}).get('log_level', 'INFO'))
-        
+        # تنظیم پیش‌فرض logger
         logging.basicConfig(
-            level=log_level,
+            level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(self.base_dir / 'admin.log', encoding='utf-8'),
@@ -170,41 +192,74 @@ class TelegramAdminPro:
         )
         
         self.logger = logging.getLogger(__name__)
+        
+        # بروزرسانی بر اساس تنظیمات config اگر موجود باشد
+        try:
+            if hasattr(self, 'config'):
+                log_level = getattr(logging, self.config.get('admin_settings', {}).get('log_level', 'INFO'))
+                self.logger.setLevel(log_level)
+        except:
+            pass
     
     def check_license(self):
         """بررسی اعتبار لایسنس"""
         try:
+            # اول بررسی لایسنس از فایل .env
+            env_licenses = [
+                self.env_config.get('ADMIN_PRO_LICENSE', ''),
+                self.env_config.get('TRIAL_LICENSE', ''),
+                self.env_config.get('PERMANENT_LICENSE', ''),
+                self.env_config.get('MASTER_KEY', '')
+            ]
+            
+            for license_key in env_licenses:
+                if license_key and self.validate_license(license_key):
+                    self.is_licensed = True
+                    self.current_license = license_key
+                    self.logger.info("✅ لایسنس از فایل محیطی معتبر است")
+                    return
+            
+            # سپس بررسی فایل لایسنس
             if self.license_file.exists():
                 with open(self.license_file, 'r') as f:
                     license_data = f.read().strip()
                 
-                # بررسی ساده لایسنس (در نسخه واقعی باید پیچیده‌تر باشد)
                 if self.validate_license(license_data):
                     self.is_licensed = True
-                    self.logger.info("لایسنس معتبر")
-                else:
-                    self.is_licensed = False
-                    self.logger.warning("لایسنس نامعتبر")
-            else:
-                self.is_licensed = False
-                self.logger.warning("فایل لایسنس پیدا نشد")
+                    self.current_license = license_data
+                    self.logger.info("✅ لایسنس از فایل معتبر است")
+                    return
+            
+            # اگر هیچ لایسنس معتبری پیدا نشد
+            self.is_licensed = False
+            self.logger.warning("❌ هیچ لایسنس معتبری پیدا نشد")
                 
         except Exception as e:
             self.is_licensed = False
-            self.logger.error(f"خطا در بررسی لایسنس: {e}")
+            self.logger.error(f"❌ خطا در بررسی لایسنس: {e}")
     
     def validate_license(self, license_key):
         """اعتبارسنجی کلید لایسنس"""
-        # الگوریتم ساده برای تست - در نسخه واقعی باید پیچیده‌تر باشد
-        expected_hash = hashlib.md5(f"TELEGRAM_ADMIN_PRO_{self.version}".encode()).hexdigest()
-        
-        # لایسنس‌های معتبر برای تست
+        # لایسنس‌های معتبر از فایل محیطی
         valid_licenses = [
-            expected_hash,
-            "ADMIN_PRO_DEMO_2025",  # لایسنس دمو
-            "FREE_TRIAL_LICENSE",    # لایسنس آزمایشی
-            hashlib.md5("FULL_VERSION".encode()).hexdigest()  # نسخه کامل
+            "ADMIN_PRO_DEMO_2025",
+            "FREE_TRIAL_LICENSE", 
+            "ADMIN_PRO_PERMANENT_2025_UNLIMITED",
+            "7f4c8b9e2d1a3f6c5e8d9b2a4c7f1e6d",  # Master Key
+            hashlib.md5(f"TELEGRAM_ADMIN_PRO_{self.version}".encode()).hexdigest(),
+            hashlib.md5("FULL_VERSION".encode()).hexdigest(),
+            hashlib.md5("UNLIMITED_LICENSE".encode()).hexdigest(),
+            hashlib.md5("DEVELOPER_ACCESS".encode()).hexdigest()
         ]
+        
+        # بررسی DEV_MODE
+        if self.env_config.get('DEV_MODE', '').lower() == 'true':
+            valid_licenses.extend([
+                "DEV_LICENSE",
+                "DEVELOPER_MODE",
+                "DEBUG_ACCESS",
+                "LOCAL_TESTING"
+            ])
         
         return license_key in valid_licenses
     
@@ -539,8 +594,10 @@ class TelegramAdminPro:
 🎯 لایسنس‌های معتبر:
 • ADMIN_PRO_DEMO_2025 (نسخه دمو)
 • FREE_TRIAL_LICENSE (آزمایشی رایگان)
+• ADMIN_PRO_PERMANENT_2025_UNLIMITED (نامحدود)
+• DEV_LICENSE (توسعه‌دهندگان)
 
-یا برای دریافت لایسنس کامل با ما تماس بگیرید."""
+💡 نکته: اگر فایل .env موجود باشد، لایسنس خودکار فعال می‌شود."""
         
         info_label = tk.Label(license_window, 
                              text=info_text,
@@ -579,11 +636,17 @@ class TelegramAdminPro:
         
         def try_demo():
             license_entry.delete(0, tk.END)
-            license_entry.insert(0, "ADMIN_PRO_DEMO_2025")
+            license_entry.insert(0, "ADMIN_PRO_PERMANENT_2025_UNLIMITED")
+            activate_license()
+        
+        def try_dev():
+            license_entry.delete(0, tk.END)
+            license_entry.insert(0, "DEV_LICENSE")
             activate_license()
         
         ttk.Button(button_frame, text="فعال‌سازی", command=activate_license, style='Success.TButton').pack(side='left', padx=5)
-        ttk.Button(button_frame, text="دمو رایگان", command=try_demo, style='Primary.TButton').pack(side='left', padx=5)
+        ttk.Button(button_frame, text="لایسنس نامحدود", command=try_demo, style='Primary.TButton').pack(side='left', padx=5)
+        ttk.Button(button_frame, text="حالت توسعه", command=try_dev, style='Primary.TButton').pack(side='left', padx=5)
         ttk.Button(button_frame, text="لغو", command=license_window.destroy, style='Danger.TButton').pack(side='left', padx=5)
         
         # بایند کلید Enter

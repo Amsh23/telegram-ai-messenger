@@ -7,16 +7,21 @@ opencv-python==4.12.0.88
 numpy==2.2.6
 python-telegram-bot==20.7
 pygetwindow==0.0.9
-base64
-json
-time
-os
-subprocess
-threading
 
 # کتابخانه‌های Vision AI
 # ollama (نصب جداگانه مورد نیاز)
 # llava model برای computer vision
+
+# کتابخانه‌های Admin Pro v3
+sqlite3  # برای دیتابیس (built-in)
+tkinter  # برای رابط کاربری (built-in)
+threading  # برای پردازش همزمان (built-in)
+pathlib  # برای مدیریت فایل (built-in)
+logging  # برای سیستم لاگ (built-in)
+hashlib  # برای امنیت (built-in)
+datetime  # برای زمان‌بندی (built-in)
+json  # برای تنظیمات (built-in)
+base64  # برای رمزگذاری (built-in)
 
 # کتابخانه‌های اختیاری برای ویژگی‌های پیشرفته
 # برای OCR تشخیص badge ها (اختیاری - افزایش دقت تشخیص)
