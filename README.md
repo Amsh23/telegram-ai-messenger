@@ -1,33 +1,72 @@
-# 🤖 Telegram AI Messenger - The Ultimate Advanced v3.0
+# 🤖 Telegram AI Messenger - نسخه‌های مختلف
 
 <div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg?style=for-the-badge&logo=python)
-![OpenCV](https://img.shields.io/badge/OpenCV-4.8+-green.svg?style=for-the-badge&logo=opencv)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)
+![AI](https://img.shields.io/badge/AI-Ollama%20%2B%20Vision-green.svg?style=for-the-badge&logo=ai)
+![License](https://img.shields.io/badge/License-Mixed-yellow.svg?style=for-the-badge)
 ![Status](https://img.shields.io/badge/Status-Production%20Ready-success.svg?style=for-the-badge)
-![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg?style=for-the-badge)
-![Accuracy](https://img.shields.io/badge/Accuracy-90%25+-brightgreen.svg?style=for-the-badge)
 
-### � **پیشرفته‌ترین سیستم تشخیص و پاسخ‌دهی خودکار چت‌های تلگرام**
+### 🎯 **مجموعه کامل ابزارهای مدیریت هوشمند تلگرام**
 
-***The Most Advanced Telegram Chat Detection & Auto-Reply System***
+***Complete Telegram AI Management Suite***
 
-*Multi-Method Detection • Smart Filtering • Professional Testing • Complete Documentation*
-
-[English](#english) | [فارسی](#فارسی) | [📚 Developer Guide](COMPLETE_DEVELOPER_GUIDE.md) | [🧪 Testing](test_advanced_system.py)
+[📱 نسخه 1: پایه](#نسخه-1-پایه) | [👁️ نسخه 2: Vision AI](#نسخه-2-vision-ai) | [💼 نسخه 3: حرفه‌ای](#نسخه-3-حرفه‌ای)
 
 </div>
 
 ---
 
-## 🎯 فارسی
+## 🎭 انتخاب نسخه مناسب
 
-### 🔥 ویژگی‌های انقلابی نسخه 3.0
+### 📱 نسخه 1: پایه (`telegram_ai_messenger.py`)
+**برای شروع و یادگیری**
+- ✅ تشخیص badge خوانده‌نشده  
+- ✅ پاسخ‌دهی خودکار ساده
+- ✅ رابط کاربری گرافیکی
+- ✅ مدیریت چند اکانت
+- ✅ مناسب برای مبتدیان
 
-#### 🧠 **تشخیص هوشمند چت‌های خوانده‌نشده - دقت 90%+**
-- **روش سه‌گانه تشخیص**: رنگ HSV + تحلیل کنتراست + OCR
-- **تطبیق‌پذیری**: پشتیبانی از تمام resolutionها و تم‌های تلگرام
+```bash
+python telegram_ai_messenger.py
+```
+
+### 👁️ نسخه 2: Vision AI (`run_vision_ai.bat`)
+**برای تحلیل پیشرفته**
+- ✅ Computer Vision با llava
+- ✅ اسکرین‌شات هر ثانیه
+- ✅ تحلیل محتوای پیام‌ها
+- ✅ پاسخ‌دهی بلادرنگ
+- ✅ مناسب برای استفاده شخصی
+
+```bash
+run_vision_ai.bat
+```
+
+### 💼 نسخه 3: حرفه‌ای (`telegram_admin_pro.py`)
+**برای استفاده تجاری**
+- ✅ مدیریت چندین چت همزمان
+- ✅ سیستم لایسنس و امنیت
+- ✅ گزارش‌دهی و آمار تفصیلی
+- ✅ پنل مدیریت پیشرفته
+- ✅ قابل فروش و تجاری‌سازی
+
+```bash
+python telegram_admin_pro.py
+```
+
+---
+
+## 🚀 مقایسه نسخه‌ها
+
+| ویژگی | نسخه 1 | نسخه 2 | نسخه 3 |
+|--------|---------|---------|---------|
+| **سادگی استفاده** | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ |
+| **قدرت تحلیل** | ⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
+| **ویژگی‌های حرفه‌ای** | ⭐ | ⭐ | ⭐⭐⭐ |
+| **امنیت** | ⭐ | ⭐⭐ | ⭐⭐⭐ |
+| **قابلیت فروش** | ❌ | ❌ | ✅ |
+| **پشتیبانی تجاری** | ❌ | ❌ | ✅ |
 - **تشخیص badge آبی**: الگوریتم پیشرفته تشخیص نشان‌های خوانده‌نشده
 - **بازخورد بصری**: ذخیره تصاویر debug برای بهبود دقت
 
