@@ -6,6 +6,9 @@
 ویژگی‌های نسخه 3:
 - مدیریت همزمان چندین چت و گروه
 - پاسخ‌دهی هوشمند و خودکار به همه پیام‌ها
+- پردازش موازی و اسکن خودکار چت‌ها
+- ارسال مستقیم پیام (نه کپی به کلیپ‌بورد)
+- اجرا و کنترل خودکار تلگرام
 - سیستم لاگ و گزارش‌دهی حرفه‌ای
 - پنل مدیریت پیشرفته
 - امنیت و کنترل دسترسی
@@ -31,6 +34,12 @@ from pathlib import Path
 import subprocess
 import pygetwindow as gw
 from PIL import Image, ImageTk
+
+# ایمپورت ماژول‌های جدید
+from telegram_auto_manager import TelegramAutoManager
+from chat_scanner import ChatScanner
+from smart_response_generator import SmartResponseGenerator
+from parallel_processor import ParallelProcessor
 
 class TelegramAdminPro:
     """کلاس اصلی ادمین هوشمند تلگرام"""
@@ -89,6 +98,9 @@ class TelegramAdminPro:
         self.setup_logging()  # ابتدا logging را تنظیم کنیم
         self.setup_system()
         self.setup_database()
+        
+        # مقداردهی ماژول‌های جدید
+        self.setup_new_modules()
         self.create_gui()
     
     def load_env_manually(self):
@@ -116,6 +128,26 @@ class TelegramAdminPro:
     def is_commercial_license(self):
         """بررسی لایسنس تجاری"""
         return os.getenv('ADMIN_PRO_COMMERCIAL', 'false').lower() == 'true'
+    
+    def get_ollama_settings(self):
+        """دریافت تنظیمات Ollama از .env"""
+        return {
+            'url': os.getenv('OLLAMA_URL', 'http://127.0.0.1:11434'),
+            'text_model': os.getenv('OLLAMA_TEXT_MODEL', 'llama3.1:8b'),
+            'vision_model': os.getenv('OLLAMA_VISION_MODEL', 'llava'),
+            'timeout': int(os.getenv('OLLAMA_TIMEOUT', '45')),
+            'vision_timeout': int(os.getenv('VISION_TIMEOUT', '60')),
+            'retry_attempts': int(os.getenv('RETRY_ATTEMPTS', '3'))
+        }
+    
+    def get_performance_settings(self):
+        """دریافت تنظیمات عملکرد از .env"""
+        return {
+            'max_chats': int(os.getenv('MAX_CONCURRENT_CHATS', '50')),
+            'response_delay': float(os.getenv('RESPONSE_DELAY', '0.5')),
+            'professional_mode': os.getenv('PROFESSIONAL_MODE', 'true').lower() == 'true',
+            'vision_enabled': os.getenv('VISION_ENABLED', 'true').lower() == 'true'
+        }
         
     def setup_system(self):
         """راه‌اندازی سیستم و بارگذاری تنظیمات"""
@@ -146,6 +178,45 @@ class TelegramAdminPro:
             self.create_tables()
         except Exception as e:
             print(f"خطا در راه‌اندازی دیتابیس: {e}")
+    
+    def setup_new_modules(self):
+        """راه‌اندازی ماژول‌های جدید"""
+        try:
+            self.log_message("🔧 راه‌اندازی ماژول‌های جدید...")
+            
+            # تنظیمات کانفیگ
+            config = {
+                'telegram_path': os.getenv('TELEGRAM_PORTABLE_PATH', 'C:/Telegram/Telegram.exe'),
+                'auto_start': os.getenv('TELEGRAM_AUTO_START', 'true').lower() == 'true',
+                'fullscreen': os.getenv('TELEGRAM_FULLSCREEN', 'true').lower() == 'true',
+                'send_delay': float(os.getenv('MESSAGE_SEND_DELAY', '1.5')),
+                'typing_speed': float(os.getenv('TYPING_SPEED', '0.05')),
+                'scan_interval': int(os.getenv('SCAN_INTERVAL', '30')),
+                'max_chats_per_scan': int(os.getenv('MAX_CHATS_PER_SCAN', '20')),
+                'max_worker_threads': int(os.getenv('MAX_WORKER_THREADS', '3')),
+                'queue_size': int(os.getenv('QUEUE_SIZE', '100')),
+                'batch_size': int(os.getenv('BATCH_SIZE', '5')),
+                'ollama_url': os.getenv('OLLAMA_URL', 'http://127.0.0.1:11434'),
+                'text_model': os.getenv('OLLAMA_TEXT_MODEL', 'llama3.1:8b'),
+                'vision_model': os.getenv('OLLAMA_VISION_MODEL', 'llava'),
+                'vision_timeout': int(os.getenv('VISION_TIMEOUT', '180')),
+                'text_timeout': int(os.getenv('OLLAMA_TIMEOUT', '120'))
+            }
+            
+            # مقداردهی ماژول‌ها
+            self.telegram_manager = TelegramAutoManager(config)
+            self.response_generator = SmartResponseGenerator(config)
+            self.chat_scanner = ChatScanner(config, self.telegram_manager)
+            self.parallel_processor = ParallelProcessor(
+                config, self.telegram_manager, self.chat_scanner, self.response_generator
+            )
+            
+            self.log_message("✅ ماژول‌های جدید راه‌اندازی شدند")
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در راه‌اندازی ماژول‌ها: {e}")
+            return False
     
     def create_tables(self):
         """ساخت جداول پایگاه داده"""
@@ -301,7 +372,9 @@ class TelegramAdminPro:
             'warning': '#f39c12',
             'danger': '#e74c3c',
             'dark': '#2c3e50',
-            'light': '#ecf0f1'
+            'light': '#ecf0f1',
+            'secondary': '#95a5a6',
+            'info': '#16a085'
         }
         
         # استایل دکمه‌ها
@@ -373,6 +446,49 @@ class TelegramAdminPro:
                                      command=self.open_advanced_settings)
         self.settings_btn.pack(side='left', padx=5)
         
+        self.fallback_btn = ttk.Button(btn_frame, text="🔄 تست Fallback", 
+                                     style='Warning.TButton',
+                                     command=self.test_fallback_mode)
+        self.fallback_btn.pack(side='left', padx=5)
+        
+        # دکمه‌های کنترل تلگرام
+        telegram_control_frame = tk.Frame(control_frame, bg='#ecf0f1')
+        telegram_control_frame.pack(fill='x', pady=5)
+        
+        tk.Label(telegram_control_frame, text="🔧 کنترل تلگرام:", 
+                font=('Arial', 10, 'bold'), bg='#ecf0f1').pack(side='left')
+        
+        self.telegram_start_btn = ttk.Button(telegram_control_frame, text="📱 شروع تلگرام", 
+                                           command=self.start_telegram_manually)
+        self.telegram_start_btn.pack(side='left', padx=5)
+        
+        self.telegram_focus_btn = ttk.Button(telegram_control_frame, text="🎯 فوکوس", 
+                                           command=self.focus_telegram_manually)
+        self.telegram_focus_btn.pack(side='left', padx=5)
+        
+        self.scan_chats_btn = ttk.Button(telegram_control_frame, text="🔍 اسکن چت‌ها", 
+                                       command=self.manual_scan_chats)
+        self.scan_chats_btn.pack(side='left', padx=5)
+        
+        # دکمه‌های تست اتصال
+        test_frame = tk.Frame(control_frame, bg='#ecf0f1')
+        test_frame.pack(fill='x', pady=5)
+        
+        tk.Label(test_frame, text="🧪 تست‌ها:", 
+                font=('Arial', 10, 'bold'), bg='#ecf0f1').pack(side='left')
+        
+        self.test_ollama_btn = ttk.Button(test_frame, text="🤖 تست Vision AI", 
+                                        command=self.test_vision_ai_connection)
+        self.test_ollama_btn.pack(side='left', padx=5)
+        
+        self.test_telegram_btn = ttk.Button(test_frame, text="📱 تست تلگرام", 
+                                          command=self.test_telegram_connection)
+        self.test_telegram_btn.pack(side='left', padx=5)
+        
+        self.test_scan_btn = ttk.Button(test_frame, text="🔍 تست اسکن", 
+                                      command=self.test_chat_scanning)
+        self.test_scan_btn.pack(side='left', padx=5)
+        
         # Notebook برای تب‌ها
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill='both', expand=True, padx=10, pady=5)
@@ -403,16 +519,47 @@ class TelegramAdminPro:
         self.total_messages_var = tk.StringVar(value="0")
         self.success_rate_var = tk.StringVar(value="0%")
         self.avg_response_time_var = tk.StringVar(value="0s")
+        self.fallback_status_var = tk.StringVar(value="Vision AI")
+        
+        # متغیرهای آمار جدید
+        self.unread_chats_var = tk.StringVar(value="0")
+        self.sent_messages_var = tk.StringVar(value="0")
+        self.scan_success_rate_var = tk.StringVar(value="0%")
+        self.last_scan_time_var = tk.StringVar(value="هرگز")
+        self.scan_method_var = tk.StringVar(value="هیچ")
         
         # نمایش آمار
         stats_grid = tk.Frame(stats_frame, bg='#ecf0f1')
         stats_grid.pack(fill='x')
         
+        # ردیف اول
         tk.Label(stats_grid, text="چت‌های فعال:", font=('Arial', 10, 'bold')).grid(row=0, column=0, sticky='w', padx=5)
         tk.Label(stats_grid, textvariable=self.active_chats_var, fg=self.colors['primary']).grid(row=0, column=1, sticky='w', padx=5)
         
-        tk.Label(stats_grid, text="کل پیام‌ها:", font=('Arial', 10, 'bold')).grid(row=0, column=2, sticky='w', padx=20)
-        tk.Label(stats_grid, textvariable=self.total_messages_var, fg=self.colors['primary']).grid(row=0, column=3, sticky='w', padx=5)
+        tk.Label(stats_grid, text="چت‌های خوانده نشده:", font=('Arial', 10, 'bold')).grid(row=0, column=2, sticky='w', padx=20)
+        tk.Label(stats_grid, textvariable=self.unread_chats_var, fg=self.colors['warning']).grid(row=0, column=3, sticky='w', padx=5)
+        
+        # ردیف دوم
+        tk.Label(stats_grid, text="کل پیام‌ها:", font=('Arial', 10, 'bold')).grid(row=1, column=0, sticky='w', padx=5)
+        tk.Label(stats_grid, textvariable=self.total_messages_var, fg=self.colors['primary']).grid(row=1, column=1, sticky='w', padx=5)
+        
+        tk.Label(stats_grid, text="پیام‌های ارسالی:", font=('Arial', 10, 'bold')).grid(row=1, column=2, sticky='w', padx=20)
+        tk.Label(stats_grid, textvariable=self.sent_messages_var, fg=self.colors['success']).grid(row=1, column=3, sticky='w', padx=5)
+        
+        # ردیف سوم
+        tk.Label(stats_grid, text="حالت فعلی:", font=('Arial', 10, 'bold')).grid(row=2, column=0, sticky='w', padx=5)
+        self.fallback_status_label = tk.Label(stats_grid, textvariable=self.fallback_status_var, fg=self.colors['success'])
+        self.fallback_status_label.grid(row=2, column=1, sticky='w', padx=5)
+        
+        tk.Label(stats_grid, text="درصد موفقیت اسکن:", font=('Arial', 10, 'bold')).grid(row=2, column=2, sticky='w', padx=20)
+        tk.Label(stats_grid, textvariable=self.scan_success_rate_var, fg=self.colors['primary']).grid(row=2, column=3, sticky='w', padx=5)
+        
+        # ردیف چهارم
+        tk.Label(stats_grid, text="آخرین اسکن:", font=('Arial', 10, 'bold')).grid(row=3, column=0, sticky='w', padx=5)
+        tk.Label(stats_grid, textvariable=self.last_scan_time_var, fg=self.colors['secondary']).grid(row=3, column=1, sticky='w', padx=5)
+        
+        tk.Label(stats_grid, text="روش اسکن:", font=('Arial', 10, 'bold')).grid(row=3, column=2, sticky='w', padx=20)
+        tk.Label(stats_grid, textvariable=self.scan_method_var, fg=self.colors['info']).grid(row=3, column=3, sticky='w', padx=5)
         
         tk.Label(stats_grid, text="نرخ موفقیت:", font=('Arial', 10, 'bold')).grid(row=1, column=0, sticky='w', padx=5)
         tk.Label(stats_grid, textvariable=self.success_rate_var, fg=self.colors['success']).grid(row=1, column=1, sticky='w', padx=5)
@@ -563,16 +710,42 @@ class TelegramAdminPro:
         if self.is_running:
             return
         
-        self.is_running = True
-        self.start_btn.config(state='disabled')
-        self.stop_btn.config(state='normal')
-        self.status_label.config(text="🟢 فعال", fg='#27ae60')
-        
-        # شروع thread اصلی
-        self.admin_thread = threading.Thread(target=self.run_admin_system, daemon=True)
-        self.admin_thread.start()
-        
-        self.log_message("🚀 سیستم ادمین هوشمند شروع شد")
+        try:
+            self.log_message("🚀 شروع سیستم ادمین هوشمند...")
+            
+            # راه‌اندازی تلگرام خودکار
+            auto_start = os.getenv('TELEGRAM_AUTO_START', 'true').lower() == 'true'
+            if auto_start:
+                self.log_message("📱 راه‌اندازی تلگرام خودکار...")
+                if self.telegram_manager.start_telegram():
+                    self.telegram_manager.maximize_telegram()
+                    self.log_message("✅ تلگرام با موفقیت راه‌اندازی شد")
+                else:
+                    self.log_message("⚠️ خطا در راه‌اندازی تلگرام، ادامه با حالت دستی")
+            
+            # شروع پردازش موازی
+            if self.parallel_processor.start():
+                self.log_message("⚡ پردازش موازی شروع شد")
+            else:
+                self.log_message("⚠️ خطا در شروع پردازش موازی")
+            
+            self.is_running = True
+            self.start_btn.config(state='disabled')
+            self.stop_btn.config(state='normal')
+            self.status_label.config(text="🟢 فعال", fg='#27ae60')
+            
+            # شروع thread اصلی
+            self.admin_thread = threading.Thread(target=self.run_admin_system, daemon=True)
+            self.admin_thread.start()
+            
+            self.log_message("✅ سیستم ادمین هوشمند شروع شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در شروع سیستم: {e}")
+            self.is_running = False
+            self.start_btn.config(state='normal')
+            self.stop_btn.config(state='disabled')
+            self.status_label.config(text="🔴 خطا", fg='#e74c3c')
     
     def show_license_dialog(self):
         """نمایش پنجره ورود لایسنس"""
@@ -660,56 +833,486 @@ class TelegramAdminPro:
     
     def stop_admin_system(self):
         """توقف سیستم ادمین"""
-        self.is_running = False
-        self.start_btn.config(state='normal')
-        self.stop_btn.config(state='disabled')
-        self.status_label.config(text="🔴 غیرفعال", fg='#e74c3c')
-        
-        self.log_message("⏹️ سیستم ادمین متوقف شد")
+        try:
+            self.log_message("🛑 توقف سیستم ادمین...")
+            
+            self.is_running = False
+            
+            # توقف پردازش موازی
+            if hasattr(self, 'parallel_processor'):
+                self.parallel_processor.stop()
+            
+            # بستن تلگرام (اختیاری)
+            # if hasattr(self, 'telegram_manager'):
+            #     self.telegram_manager.close_telegram()
+            
+            self.start_btn.config(state='normal')
+            self.stop_btn.config(state='disabled')
+            self.status_label.config(text="🔴 غیرفعال", fg='#e74c3c')
+            
+            self.log_message("✅ سیستم ادمین متوقف شد")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در توقف سیستم: {e}")
+    
+    def test_fallback_mode(self):
+        """تست حالت fallback"""
+        try:
+            self.log_message("🧪 شروع تست حالت Fallback...")
+            
+            # تنظیمات چت فیک برای تست
+            test_chat_config = {
+                'name': 'Test Chat',
+                'type': 'private',
+                'admin_style': 'friendly',
+                'auto_response': True
+            }
+            
+            # اجرای fallback
+            self.process_chat_fallback(test_chat_config)
+            
+            messagebox.showinfo("تست Fallback", 
+                              "✅ تست حالت Fallback با موفقیت انجام شد!\n"
+                              "پیام تست در لاگ مشاهده کنید.")
+                              
+        except Exception as e:
+            self.log_message(f"❌ خطا در تست fallback: {e}")
+            messagebox.showerror("خطا", f"خطا در تست fallback:\n{e}")
+    
+    def test_vision_ai_connection(self):
+        """تست اتصال Vision AI"""
+        try:
+            self.log_message("🧪 شروع تست اتصال Vision AI...")
+            
+            settings = self.get_ollama_settings()
+            
+            # تست اتصال به Ollama
+            response = requests.get(f"{settings['url']}/api/tags", timeout=10)
+            
+            if response.status_code == 200:
+                models = response.json().get('models', [])
+                vision_model = settings['vision_model']
+                
+                # بررسی وجود مدل Vision
+                vision_available = any(model.get('name', '').startswith(vision_model) for model in models)
+                
+                if vision_available:
+                    # تست تولید پاسخ ساده
+                    test_response = requests.post(
+                        f"{settings['url']}/api/generate",
+                        json={
+                            "model": vision_model,
+                            "prompt": "سلام! این یک تست است.",
+                            "stream": False
+                        },
+                        timeout=30
+                    )
+                    
+                    if test_response.status_code == 200:
+                        self.log_message("✅ Vision AI کاملاً آماده است")
+                        messagebox.showinfo("تست Vision AI", 
+                                          f"✅ اتصال موفق!\n"
+                                          f"🤖 مدل: {vision_model}\n"
+                                          f"🌐 سرور: {settings['url']}\n"
+                                          f"📊 تعداد مدل‌ها: {len(models)}")
+                    else:
+                        self.log_message("⚠️ مدل Vision در دسترس نیست")
+                        messagebox.showwarning("تست Vision AI", 
+                                             f"⚠️ مدل {vision_model} پاسخ نمی‌دهد")
+                else:
+                    self.log_message(f"❌ مدل {vision_model} یافت نشد")
+                    messagebox.showerror("تست Vision AI", 
+                                       f"❌ مدل {vision_model} نصب نیست\n"
+                                       f"💡 دستور نصب: ollama pull {vision_model}")
+            else:
+                self.log_message("❌ سرور Ollama در دسترس نیست")
+                messagebox.showerror("تست Vision AI", 
+                                   f"❌ سرور Ollama در دسترس نیست\n"
+                                   f"🌐 آدرس: {settings['url']}\n"
+                                   f"💡 لطفاً Ollama را راه‌اندازی کنید")
+                
+        except requests.exceptions.ConnectionError:
+            self.log_message("❌ خطا در اتصال به Ollama")
+            messagebox.showerror("تست Vision AI", 
+                               "❌ خطا در اتصال به Ollama\n"
+                               "💡 مطمئن شوید Ollama در حال اجرا است")
+        except Exception as e:
+            self.log_message(f"❌ خطا در تست Vision AI: {e}")
+            messagebox.showerror("خطا", f"خطا در تست:\n{e}")
+    
+    def test_telegram_connection(self):
+        """تست اتصال و کنترل تلگرام"""
+        try:
+            self.log_message("🧪 شروع تست اتصال تلگرام...")
+            
+            # بررسی وجود فایل تلگرام
+            telegram_path = os.getenv('TELEGRAM_PORTABLE_PATH', 'C:/Telegram/Telegram.exe')
+            
+            if not Path(telegram_path).exists():
+                self.log_message(f"❌ فایل تلگرام پیدا نشد: {telegram_path}")
+                messagebox.showerror("تست تلگرام", 
+                                   f"❌ فایل تلگرام پیدا نشد:\n{telegram_path}\n"
+                                   f"💡 مسیر را در فایل .env تنظیم کنید")
+                return
+            
+            # بررسی اجرا بودن تلگرام
+            telegram_running = self.telegram_manager.is_telegram_running()
+            
+            # تست پیدا کردن پنجره
+            window_found = self.telegram_manager.find_telegram_window()
+            
+            # گزارش نتایج
+            results = []
+            results.append(f"📱 فایل تلگرام: {'✅ موجود' if Path(telegram_path).exists() else '❌ موجود نیست'}")
+            results.append(f"🔄 وضعیت اجرا: {'✅ در حال اجرا' if telegram_running else '❌ اجرا نیست'}")
+            results.append(f"🖼️ پنجره: {'✅ پیدا شد' if window_found else '❌ پیدا نشد'}")
+            
+            if telegram_running and window_found:
+                # تست فوکوس
+                focus_success = self.telegram_manager.focus_telegram()
+                results.append(f"🎯 فوکوس: {'✅ موفق' if focus_success else '❌ ناموفق'}")
+                
+                self.log_message("✅ تلگرام کاملاً آماده است")
+                messagebox.showinfo("تست تلگرام", "\n".join(results))
+            else:
+                self.log_message("⚠️ تلگرام آماده نیست")
+                messagebox.showwarning("تست تلگرام", 
+                                     "\n".join(results) + 
+                                     "\n\n💡 از دکمه 'شروع تلگرام' استفاده کنید")
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در تست تلگرام: {e}")
+            messagebox.showerror("خطا", f"خطا در تست:\n{e}")
+    
+    def test_chat_scanning(self):
+        """تست قابلیت اسکن چت‌ها"""
+        try:
+            self.log_message("🧪 شروع تست اسکن چت‌ها...")
+            
+            # بررسی آماده بودن تلگرام
+            if not self.telegram_manager.is_telegram_running():
+                messagebox.showwarning("تست اسکن", 
+                                     "⚠️ ابتدا تلگرام را راه‌اندازی کنید")
+                return
+            
+            # اسکن تستی
+            chat_data = self.chat_scanner.scan_chat_list()
+            scan_stats = self.chat_scanner.get_scan_statistics()
+            
+            # نمایش نتایج
+            if chat_data and chat_data.get('chats'):
+                total_chats = len(chat_data['chats'])
+                unread_chats = chat_data.get('unread_chats', 0)
+                scan_method = scan_stats.get('scan_method_used', 'نامشخص')
+                
+                results = [
+                    f"✅ اسکن موفق!",
+                    f"📊 کل چت‌ها: {total_chats}",
+                    f"📨 خوانده نشده: {unread_chats}",
+                    f"🔍 روش اسکن: {scan_method}",
+                    f"📈 نرخ موفقیت: {scan_stats.get('successful_scans', 0)}/{scan_stats.get('total_scans', 0)}"
+                ]
+                
+                self.log_message(f"✅ تست اسکن موفق: {total_chats} چت، {unread_chats} خوانده نشده")
+                messagebox.showinfo("تست اسکن چت‌ها", "\n".join(results))
+                
+                # آپدیت آمار در GUI
+                self.update_live_stats()
+            else:
+                self.log_message("⚠️ هیچ چتی شناسایی نشد")
+                messagebox.showwarning("تست اسکن چت‌ها", 
+                                     "⚠️ هیچ چتی شناسایی نشد\n"
+                                     "💡 مطمئن شوید:\n"
+                                     "- تلگرام باز است\n"
+                                     "- در صفحه چت‌ها هستید\n"
+                                     "- چت‌های خوانده نشده دارید")
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در تست اسکن: {e}")
+            messagebox.showerror("خطا", f"خطا در تست اسکن:\n{e}")
+    
+    def start_telegram_manually(self):
+        """راه‌اندازی دستی تلگرام"""
+        try:
+            self.log_message("📱 راه‌اندازی دستی تلگرام...")
+            
+            if self.telegram_manager.start_telegram():
+                self.telegram_manager.maximize_telegram()
+                self.log_message("✅ تلگرام با موفقیت راه‌اندازی شد")
+                messagebox.showinfo("تلگرام", "✅ تلگرام با موفقیت راه‌اندازی شد")
+            else:
+                self.log_message("❌ خطا در راه‌اندازی تلگرام")
+                messagebox.showerror("خطا", "❌ خطا در راه‌اندازی تلگرام")
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا: {e}")
+            messagebox.showerror("خطا", f"خطا در راه‌اندازی:\n{e}")
+    
+    def focus_telegram_manually(self):
+        """فوکوس دستی روی تلگرام"""
+        try:
+            if self.telegram_manager.focus_telegram():
+                self.log_message("✅ فوکوس روی تلگرام")
+                messagebox.showinfo("تلگرام", "✅ فوکوس روی تلگرام")
+            else:
+                self.log_message("❌ نتوانستیم فوکوس کنیم")
+                messagebox.showerror("خطا", "❌ نتوانستیم روی تلگرام فوکوس کنیم")
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا: {e}")
+            messagebox.showerror("خطا", f"خطا در فوکوس:\n{e}")
+    
+    def manual_scan_chats(self):
+        """اسکن دستی چت‌ها"""
+        try:
+            self.log_message("🔍 شروع اسکن دستی چت‌ها...")
+            
+            # اسکن چت‌ها
+            unread_chats = self.chat_scanner.find_unread_chats()
+            
+            if unread_chats:
+                self.log_message(f"📨 {len(unread_chats)} چت خوانده نشده پیدا شد")
+                
+                # نمایش لیست چت‌ها
+                chat_names = [chat.get('name', 'نامشخص') for chat in unread_chats[:5]]
+                if len(unread_chats) > 5:
+                    chat_names.append(f"... و {len(unread_chats) - 5} چت دیگر")
+                
+                messagebox.showinfo("اسکن چت‌ها", 
+                                  f"📨 {len(unread_chats)} چت خوانده نشده:\n\n" + 
+                                  "\n".join(f"• {name}" for name in chat_names))
+            else:
+                self.log_message("📭 هیچ چت خوانده نشده‌ای پیدا نشد")
+                messagebox.showinfo("اسکن چت‌ها", 
+                                  "📭 هیچ چت خوانده نشده‌ای پیدا نشد\n\n"
+                                  "💡 نکات:\n"
+                                  "• مطمئن شوید در صفحه چت‌ها هستید\n"
+                                  "• چت‌های خوانده نشده داشته باشید\n"
+                                  "• تلگرام کاملاً بارگذاری شده باشد")
+            
+            # آپدیت آمار
+            self.update_live_stats()
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در اسکن دستی: {e}")
+            messagebox.showerror("خطا", f"خطا در اسکن:\n{e}")
+    
+    def start_telegram_manually(self):
+        """راه‌اندازی دستی تلگرام"""
+        try:
+            self.log_message("📱 راه‌اندازی دستی تلگرام...")
+            
+            if hasattr(self, 'telegram_manager'):
+                if self.telegram_manager.start_telegram():
+                    self.telegram_manager.maximize_telegram()
+                    self.log_message("✅ تلگرام راه‌اندازی شد")
+                    messagebox.showinfo("موفق", "✅ تلگرام با موفقیت راه‌اندازی شد!")
+                else:
+                    self.log_message("❌ خطا در راه‌اندازی تلگرام")
+                    messagebox.showerror("خطا", "❌ خطا در راه‌اندازی تلگرام")
+            else:
+                messagebox.showerror("خطا", "ماژول تلگرام مقداردهی نشده")
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در راه‌اندازی دستی: {e}")
+            messagebox.showerror("خطا", f"خطا در راه‌اندازی:\n{e}")
+    
+    def focus_telegram_manually(self):
+        """فوکوس دستی روی تلگرام"""
+        try:
+            if hasattr(self, 'telegram_manager'):
+                if self.telegram_manager.focus_telegram():
+                    self.log_message("✅ فوکوس روی تلگرام")
+                    messagebox.showinfo("موفق", "✅ فوکوس روی تلگرام انجام شد")
+                else:
+                    self.log_message("❌ خطا در فوکوس")
+                    messagebox.showerror("خطا", "❌ خطا در فوکوس روی تلگرام")
+            else:
+                messagebox.showerror("خطا", "ماژول تلگرام مقداردهی نشده")
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در فوکوس: {e}")
+            messagebox.showerror("خطا", f"خطا در فوکوس:\n{e}")
+    
+    def manual_scan_chats(self):
+        """اسکن دستی چت‌ها"""
+        try:
+            self.log_message("🔍 شروع اسکن دستی چت‌ها...")
+            
+            if hasattr(self, 'chat_scanner'):
+                # اجرای اسکن در thread جداگانه
+                def scan_thread():
+                    try:
+                        unread_chats = self.chat_scanner.find_unread_chats()
+                        
+                        # نمایش نتایج در GUI thread
+                        def show_results():
+                            if unread_chats:
+                                self.log_message(f"✅ {len(unread_chats)} چت خوانده نشده پیدا شد")
+                                
+                                # نمایش جزئیات
+                                details = "چت‌های خوانده نشده:\n\n"
+                                for i, chat in enumerate(unread_chats[:10]):  # نمایش 10 تای اول
+                                    details += f"{i+1}. {chat.get('name', 'نامشخص')}\n"
+                                
+                                if len(unread_chats) > 10:
+                                    details += f"\n... و {len(unread_chats) - 10} چت دیگر"
+                                
+                                messagebox.showinfo("نتیجه اسکن", details)
+                            else:
+                                self.log_message("📭 هیچ چت خوانده نشده‌ای پیدا نشد")
+                                messagebox.showinfo("نتیجه اسکن", "📭 هیچ چت خوانده نشده‌ای پیدا نشد")
+                        
+                        # اجرای در GUI thread
+                        self.root.after(0, show_results)
+                        
+                    except Exception as e:
+                        self.log_message(f"❌ خطا در اسکن: {e}")
+                        self.root.after(0, lambda: messagebox.showerror("خطا", f"خطا در اسکن:\n{e}"))
+                
+                # شروع thread اسکن
+                threading.Thread(target=scan_thread, daemon=True).start()
+                
+            else:
+                messagebox.showerror("خطا", "ماژول اسکن مقداردهی نشده")
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در اسکن دستی: {e}")
+            messagebox.showerror("خطا", f"خطا در اسکن:\n{e}")
     
     def run_admin_system(self):
         """حلقه اصلی سیستم ادمین"""
         try:
             self.log_message("🔄 شروع حلقه مدیریت چت‌ها...")
             
+            scan_interval = int(os.getenv('SCAN_INTERVAL', '30'))
+            
             while self.is_running:
-                # مدیریت همه چت‌ها
-                self.manage_all_chats()
+                # اسکن خودکار چت‌ها
+                self.auto_scan_and_process_chats()
                 
                 # بروزرسانی آمار
                 self.update_live_stats()
                 
                 # انتظار
-                time.sleep(self.config.get('response_settings', {}).get('response_delay', 1.0))
+                self.log_message(f"⏳ انتظار {scan_interval} ثانیه تا اسکن بعدی...")
+                time.sleep(scan_interval)
                 
         except Exception as e:
             self.log_message(f"❌ خطا در سیستم ادمین: {e}")
             self.logger.error(f"خطا در run_admin_system: {e}")
     
-    def manage_all_chats(self):
-        """مدیریت همه چت‌ها"""
-        managed_chats = self.config.get('managed_chats', [])
-        
-        for chat in managed_chats:
-            if not self.is_running:
-                break
+    def auto_scan_and_process_chats(self):
+        """اسکن خودکار و پردازش چت‌ها"""
+        try:
+            self.log_message("🔍 شروع اسکن خودکار چت‌ها...")
             
-            try:
-                self.process_chat(chat)
-            except Exception as e:
-                self.log_message(f"❌ خطا در پردازش چت {chat.get('name', 'نامشخص')}: {e}")
+            # اسکن چت‌های خوانده نشده
+            unread_chats = self.chat_scanner.find_unread_chats()
+            
+            if not unread_chats:
+                self.log_message("📭 هیچ چت خوانده نشده‌ای پیدا نشد")
+                return
+            
+            self.log_message(f"📨 {len(unread_chats)} چت خوانده نشده پیدا شد")
+            
+            # محدود کردن تعداد چت‌ها در هر اسکن
+            max_chats = int(os.getenv('MAX_CHATS_PER_SCAN', '20'))
+            if len(unread_chats) > max_chats:
+                unread_chats = unread_chats[:max_chats]
+                self.log_message(f"⚡ محدود شده به {max_chats} چت برای بهینه‌سازی")
+            
+            # پردازش موازی یا sequential
+            parallel_enabled = os.getenv('PARALLEL_PROCESSING', 'true').lower() == 'true'
+            
+            if parallel_enabled:
+                self.process_chats_parallel(unread_chats)
+            else:
+                self.process_chats_sequential(unread_chats)
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در اسکن خودکار: {e}")
+    
+    def process_chats_parallel(self, chat_list):
+        """پردازش موازی چت‌ها"""
+        try:
+            self.log_message(f"⚡ شروع پردازش موازی {len(chat_list)} چت")
+            
+            results = self.parallel_processor.process_chat_batch(chat_list)
+            
+            # گزارش نتایج
+            successful = sum(1 for r in results if r.get('success', False))
+            self.log_message(f"✅ پردازش موازی تکمیل: {successful}/{len(results)} موفق")
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در پردازش موازی: {e}")
+    
+    def process_chats_sequential(self, chat_list):
+        """پردازش ترتیبی چت‌ها"""
+        try:
+            self.log_message(f"🔄 شروع پردازش ترتیبی {len(chat_list)} چت")
+            
+            for i, chat in enumerate(chat_list):
+                if not self.is_running:
+                    break
+                
+                self.log_message(f"📝 پردازش چت {i+1}/{len(chat_list)}: {chat.get('name', 'نامشخص')}")
+                
+                # اسکن و پردازش چت
+                chat_position = (
+                    chat.get('position', {}).get('x', 100),
+                    chat.get('position', {}).get('y', 100)
+                )
+                
+                chat_data = self.chat_scanner.scan_single_chat(chat_position)
+                
+                if chat_data and chat_data.get('unread_messages'):
+                    for message in chat_data['unread_messages']:
+                        if message.get('needs_response', False):
+                            # تولید پاسخ
+                            response = self.response_generator.generate_response(
+                                message, chat_data['chat_info']
+                            )
+                            
+                            if response:
+                                # ارسال پاسخ
+                                success = self.telegram_manager.send_message(response)
+                                
+                                if success:
+                                    self.log_message(f"✅ پاسخ ارسال شد: {response[:50]}...")
+                                    # ثبت در دیتابیس
+                                    self.log_chat_interaction(chat, message, response)
+                                else:
+                                    self.log_message(f"❌ خطا در ارسال پاسخ")
+                                
+                                # تاخیر بین پیام‌ها
+                                send_delay = float(os.getenv('MESSAGE_SEND_DELAY', '1.5'))
+                                time.sleep(send_delay)
+                
+                # تاخیر بین چت‌ها
+                time.sleep(1)
+                
+        except Exception as e:
+            self.log_message(f"❌ خطا در پردازش ترتیبی: {e}")
     
     def process_chat(self, chat_config):
-        """پردازش یک چت"""
+        """پردازش یک چت با قابلیت fallback"""
+        screenshot = None
         try:
             # تصویربرداری از چت
             screenshot = self.capture_chat_screen()
             if not screenshot:
+                self.log_message("⚠️ خطا در تصویربرداری - استفاده از حالت fallback")
+                self.process_chat_fallback(chat_config)
                 return
             
             # تحلیل پیام‌ها با Vision AI
             messages = self.analyze_chat_messages(screenshot, chat_config)
+            
+            # اگر Vision AI ناموفق بود، از حالت fallback استفاده کن
             if not messages:
+                self.log_message("🔄 Vision AI ناموفق - تغییر به حالت fallback")
+                self.process_chat_fallback(chat_config)
                 return
             
             # پردازش هر پیام
@@ -724,6 +1327,68 @@ class TelegramAdminPro:
                     
         except Exception as e:
             self.log_message(f"❌ خطا در پردازش چت: {e}")
+            self.log_message("🔄 تغییر به حالت fallback")
+            self.process_chat_fallback(chat_config)
+        finally:
+            # پاک کردن فایل موقت
+            if screenshot:
+                self.cleanup_screenshot(screenshot)
+    
+    def process_chat_fallback(self, chat_config):
+        """حالت fallback برای زمانی که Vision AI کار نمی‌کند"""
+        try:
+            # آپدیت وضعیت GUI
+            self.fallback_status_var.set("🔄 Fallback Mode")
+            self.fallback_status_label.config(fg=self.colors['warning'])
+            
+            # بررسی فعال بودن fallback
+            fallback_enabled = os.getenv('FALLBACK_ENABLED', 'true').lower() == 'true'
+            if not fallback_enabled:
+                self.log_message("⚠️ Fallback غیرفعال است")
+                return
+                
+            self.log_message("🔄 حالت Fallback فعال - پاسخ‌دهی ساده")
+            
+            # تولید پاسخ کلی بر اساس تنظیمات چت
+            fallback_message = {
+                "content": "پیام عمومی در چت",
+                "type": "general",
+                "priority": "متوسط", 
+                "sender": "unknown"
+            }
+            
+            # پاسخ‌های از پیش تعریف شده
+            fallback_responses = [
+                "سلام دوست عزیز! 👋 در خدمت شما هستم",
+                "ممنون که با ما در ارتباط هستید 🙏",
+                "سوال یا درخواستی دارید؟ خوشحال می‌شوم کمکتان کنم 😊",
+                "در صورت نیاز به راهنمایی، در خدمت شما هستیم ✨",
+                "امیدوارم روز خوبی داشته باشید! 🌟",
+                "چطور می‌تونم بهتون کمک کنم؟ 🤝",
+                "سلام! آماده پاسخگویی به سوالات شما هستم 💬"
+            ]
+            
+            import random
+            response = random.choice(fallback_responses)
+            
+            # تاخیر طبیعی بر اساس تنظیمات
+            delay_min = float(os.getenv('FALLBACK_DELAY_MIN', '2'))
+            delay_max = float(os.getenv('FALLBACK_DELAY_MAX', '5'))
+            time.sleep(random.uniform(delay_min, delay_max))
+            
+            self.send_response(response, chat_config)
+            self.log_chat_interaction(chat_config, fallback_message, response)
+            
+            self.log_message("✅ پاسخ fallback ارسال شد")
+            
+            # بازگشت به حالت عادی
+            self.fallback_status_var.set("✅ Vision AI")
+            self.fallback_status_label.config(fg=self.colors['success'])
+            
+        except Exception as e:
+            self.log_message(f"❌ خطا در حالت fallback: {e}")
+            self.fallback_status_var.set("❌ خطا")
+            self.fallback_status_label.config(fg=self.colors['danger'])
     
     def capture_chat_screen(self):
         """تصویربرداری از صفحه چت"""
@@ -739,11 +1404,14 @@ class TelegramAdminPro:
     
     def analyze_chat_messages(self, screenshot_path, chat_config):
         """تحلیل پیام‌های چت با Vision AI"""
-        try:
-            with open(screenshot_path, "rb") as image_file:
-                image_data = base64.b64encode(image_file.read()).decode('utf-8')
-            
-            prompt = """تو یک ادمین هوشمند هستی که صفحه تلگرام را تحلیل می‌کنی.
+        settings = self.get_ollama_settings()
+        
+        for attempt in range(settings['retry_attempts']):
+            try:
+                with open(screenshot_path, "rb") as image_file:
+                    image_data = base64.b64encode(image_file.read()).decode('utf-8')
+                
+                prompt = """تو یک ادمین هوشمند هستی که صفحه تلگرام را تحلیل می‌کنی.
 
 وظایف:
 1. پیام‌های جدید و خوانده نشده را شناسایی کن
@@ -765,43 +1433,64 @@ class TelegramAdminPro:
 
 اگر پیام جدیدی نیست، فقط بنویس: NO_NEW_MESSAGES"""
 
-            response = requests.post(
-                f"{self.config['ollama_url']}/api/generate",
-                json={
-                    "model": self.config['ollama_vision_model'],
-                    "prompt": prompt,
-                    "images": [image_data],
-                    "stream": False,
-                    "options": {"temperature": 0.3}
-                },
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json().get('response', '').strip()
-                if result != "NO_NEW_MESSAGES":
-                    try:
-                        return json.loads(result).get('new_messages', [])
-                    except:
-                        return [{"content": result, "type": "unknown", "priority": "متوسط", "sender": "unknown"}]
-            
-            return []
-            
-        except Exception as e:
-            self.log_message(f"❌ خطا در تحلیل Vision: {e}")
-            return []
-        finally:
-            # پاک کردن فایل موقت
+                self.log_message(f"🔍 تحلیل Vision - تلاش {attempt + 1}/{settings['retry_attempts']}")
+                
+                response = requests.post(
+                    f"{settings['url']}/api/generate",
+                    json={
+                        "model": settings['vision_model'],
+                        "prompt": prompt,
+                        "images": [image_data],
+                        "stream": False,
+                        "options": {"temperature": 0.3}
+                    },
+                    timeout=settings['vision_timeout']
+                )
+                
+                if response.status_code == 200:
+                    result = response.json().get('response', '').strip()
+                    self.log_message(f"✅ Vision تحلیل موفق - تلاش {attempt + 1}")
+                    if result != "NO_NEW_MESSAGES":
+                        try:
+                            return json.loads(result).get('new_messages', [])
+                        except:
+                            return [{"content": result, "type": "unknown", "priority": "متوسط", "sender": "unknown"}]
+                    return []
+                else:
+                    self.log_message(f"⚠️ خطا در Vision API - کد {response.status_code}")
+                    
+            except requests.exceptions.Timeout:
+                wait_time = 2 ** attempt  # Exponential backoff
+                self.log_message(f"⏰ Timeout در Vision - تلاش {attempt + 1}, انتظار {wait_time}s")
+                if attempt < settings['retry_attempts'] - 1:
+                    time.sleep(wait_time)
+                    
+            except Exception as e:
+                self.log_message(f"❌ خطا در تحلیل Vision تلاش {attempt + 1}: {e}")
+                if attempt < settings['retry_attempts'] - 1:
+                    time.sleep(1)
+        
+        self.log_message(f"❌ Vision ناموفق پس از {settings['retry_attempts']} تلاش")
+        return []
+    
+    def cleanup_screenshot(self, screenshot_path):
+        """پاک کردن فایل موقت اسکرین‌شات"""
+        try:
             if screenshot_path and screenshot_path.exists():
                 screenshot_path.unlink()
+        except Exception as e:
+            self.log_message(f"⚠️ خطا در پاک کردن فایل موقت: {e}")
     
     def generate_intelligent_response(self, message, chat_config):
-        """تولید پاسخ هوشمند"""
-        try:
-            # تنظیمات پاسخ بر اساس نوع چت و پیام
-            response_style = self.determine_response_style(message, chat_config)
-            
-            prompt = f"""تو یک ادمین حرفه‌ای و با تجربه هستی.
+        """تولید پاسخ هوشمند با قابلیت تلاش مجدد"""
+        settings = self.get_ollama_settings()
+        
+        for attempt in range(settings['retry_attempts']):
+            try:
+                # تنظیمات پاسخ بر اساس نوع چت و پیام
+                response_style = self.determine_response_style(message, chat_config)
+                
+                prompt = f"""تو یک ادمین حرفه‌ای و با تجربه هستی.
 
 پیام دریافتی: "{message['content']}"
 نوع پیام: {message.get('type', 'نامشخص')}
@@ -821,28 +1510,42 @@ class TelegramAdminPro:
 
 فقط متن پاسخ را بنویس، بدون توضیح اضافی."""
 
-            response = requests.post(
-                f"{self.config['ollama_url']}/api/generate",
-                json={
-                    "model": self.config['ollama_text_model'],
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.7,
-                        "max_tokens": self.config['response_settings']['max_message_length']
-                    }
-                },
-                timeout=20
-            )
-            
-            if response.status_code == 200:
-                return response.json().get('response', '').strip()
-            
-            return None
-            
-        except Exception as e:
-            self.log_message(f"❌ خطا در تولید پاسخ: {e}")
-            return None
+                self.log_message(f"🤖 تولید پاسخ - تلاش {attempt + 1}/{settings['retry_attempts']}")
+                
+                response = requests.post(
+                    f"{settings['url']}/api/generate",
+                    json={
+                        "model": settings['text_model'],
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.7,
+                            "max_tokens": self.config['response_settings']['max_message_length']
+                        }
+                    },
+                    timeout=settings['timeout']
+                )
+                
+                if response.status_code == 200:
+                    result = response.json().get('response', '').strip()
+                    self.log_message(f"✅ پاسخ تولید شد - تلاش {attempt + 1}")
+                    return result
+                else:
+                    self.log_message(f"⚠️ خطا در Text API - کد {response.status_code}")
+                    
+            except requests.exceptions.Timeout:
+                wait_time = 2 ** attempt
+                self.log_message(f"⏰ Timeout در تولید پاسخ - تلاش {attempt + 1}, انتظار {wait_time}s")
+                if attempt < settings['retry_attempts'] - 1:
+                    time.sleep(wait_time)
+                    
+            except Exception as e:
+                self.log_message(f"❌ خطا در تولید پاسخ تلاش {attempt + 1}: {e}")
+                if attempt < settings['retry_attempts'] - 1:
+                    time.sleep(1)
+        
+        self.log_message(f"❌ تولید پاسخ ناموفق پس از {settings['retry_attempts']} تلاش")
+        return "متأسفانه در حال حاضر امکان پاسخ‌دهی وجود ندارد"
     
     def determine_response_style(self, message, chat_config):
         """تعیین سبک پاسخ بر اساس پیام و چت"""
@@ -927,7 +1630,7 @@ class TelegramAdminPro:
             cursor = self.conn.cursor()
             
             # تعداد چت‌های فعال
-            active_chats = len(self.active_sessions)
+            active_chats = len(self.active_sessions) if hasattr(self, 'active_sessions') else 0
             self.active_chats_var.set(str(active_chats))
             
             # کل پیام‌های امروز
@@ -938,6 +1641,14 @@ class TelegramAdminPro:
             total_messages = cursor.fetchone()[0]
             self.total_messages_var.set(str(total_messages))
             
+            # پیام‌های ارسالی موفق امروز
+            cursor.execute('''
+                SELECT COUNT(*) FROM message_logs 
+                WHERE DATE(timestamp) = DATE('now') AND success = 1
+            ''')
+            sent_messages = cursor.fetchone()[0]
+            self.sent_messages_var.set(str(sent_messages))
+            
             # نرخ موفقیت
             cursor.execute('''
                 SELECT 
@@ -947,6 +1658,57 @@ class TelegramAdminPro:
                 WHERE DATE(timestamp) = DATE('now')
             ''')
             result = cursor.fetchone()
+            if result[0] > 0:
+                success_rate = (result[1] / result[0]) * 100
+                self.success_rate_var.set(f"{success_rate:.1f}%")
+            else:
+                self.success_rate_var.set("0%")
+            
+            # آمار اسکن چت‌ها
+            if hasattr(self, 'chat_scanner'):
+                scan_stats = self.chat_scanner.get_scan_statistics()
+                
+                # چت‌های خوانده نشده
+                self.unread_chats_var.set(str(scan_stats.get('unread_chats', 0)))
+                
+                # نرخ موفقیت اسکن
+                total_scans = scan_stats.get('total_scans', 0)
+                successful_scans = scan_stats.get('successful_scans', 0)
+                if total_scans > 0:
+                    scan_success_rate = (successful_scans / total_scans) * 100
+                    self.scan_success_rate_var.set(f"{scan_success_rate:.1f}%")
+                else:
+                    self.scan_success_rate_var.set("0%")
+                
+                # آخرین زمان اسکن
+                last_scan = scan_stats.get('last_scan_time')
+                if last_scan:
+                    import datetime
+                    last_time = datetime.datetime.fromtimestamp(last_scan)
+                    self.last_scan_time_var.set(last_time.strftime("%H:%M:%S"))
+                else:
+                    self.last_scan_time_var.set("هرگز")
+                
+                # روش اسکن
+                scan_method = scan_stats.get('scan_method_used', 'none')
+                method_display = {
+                    'vision_ai': '🤖 Vision AI',
+                    'ocr': '👁️ OCR',
+                    'failed': '❌ ناموفق',
+                    'none': '⏸️ هیچ'
+                }.get(scan_method, scan_method)
+                self.scan_method_var.set(method_display)
+            
+            # آمار پردازش موازی
+            if hasattr(self, 'parallel_processor'):
+                parallel_stats = self.parallel_processor.get_statistics()
+                
+                # میانگین زمان پاسخ
+                avg_time = parallel_stats.get('avg_response_time', 0)
+                self.avg_response_time_var.set(f"{avg_time:.1f}s")
+            
+        except Exception as e:
+            self.logger.error(f"خطا در بروزرسانی آمار: {e}")
             if result[0] > 0:
                 success_rate = (result[1] / result[0]) * 100
                 self.success_rate_var.set(f"{success_rate:.1f}%")
